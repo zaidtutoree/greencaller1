@@ -69,6 +69,9 @@ export const useTelnyxCall = ({ userId, assignedNumber, enabled = true }: UseTel
     callId: null,
     pstnCallControlId: null,
   });
+  // Mirror callState in a ref so event handlers inside useEffect closures can read the latest value
+  const callStateRef = useRef(callState);
+  callStateRef.current = callState;
 
   const [incomingCall, setIncomingCall] = useState<TelnyxIncomingCallState>({
     isIncoming: false,
@@ -491,13 +494,29 @@ export const useTelnyxCall = ({ userId, assignedNumber, enabled = true }: UseTel
 
             // Check if this is a bridged call we're waiting for (outbound call bridge-back)
             // If we initiated an outbound call via edge function, auto-answer the incoming SIP leg
-            if (awaitingBridgeRef.current &&
+            // Also detect bridge-back calls by metadata: if callState shows isActive (we initiated
+            // an outbound call) and the incoming SIP has callerName "Outbound Call" or matches
+            // our pending call number, treat it as a bridge-back even if the ref was cleared.
+            const isBridgeByRef = !!awaitingBridgeRef.current;
+            const isBridgeByState = !isBridgeByRef &&
+              callStateRef?.current?.isActive &&
+              callStateRef?.current?.phoneNumber &&
+              !activeCallRef.current &&
+              (call.options?.callerName === 'Outbound Call' ||
+               call.options?.remoteCallerName === 'Outbound Call');
+
+            console.log("Bridge check:", { isBridgeByRef, isBridgeByState, awaitingBridge: awaitingBridgeRef.current, callActive: callStateRef?.current?.isActive, callerName: call.options?.callerName || call.options?.remoteCallerName });
+
+            if ((isBridgeByRef || isBridgeByState) &&
               (isInboundByDirection || isLikelyInbound) &&
               ["ringing", "new", "trying", "early"].includes(callState)) {
-              console.log("Auto-answering bridged call for outbound PSTN call:", awaitingBridgeRef.current);
+              console.log("Auto-answering bridged call for outbound PSTN call:", awaitingBridgeRef.current || callStateRef?.current?.phoneNumber);
 
               // Clear the bridge flag before answering
-              const bridgeInfo = awaitingBridgeRef.current;
+              const bridgeInfo = awaitingBridgeRef.current || {
+                toNumber: callStateRef?.current?.phoneNumber || callerNumber,
+                fromNumber: assignedNumber || '',
+              };
               awaitingBridgeRef.current = null;
 
               // Set this as our active call and answer it automatically
