@@ -65,7 +65,7 @@ serve(async (req) => {
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    const storeRegistration = async (sipUsername: string) => {
+    const storeRegistration = async (sipUsername: string, credentialConnectionId: string | null) => {
       const { error: regError } = await supabase
         .from("telnyx_webrtc_registrations")
         .upsert(
@@ -73,6 +73,7 @@ serve(async (req) => {
             user_id: userId,
             sip_username: sipUsername,
             expires_at: expiresAtISO,
+            ...(credentialConnectionId ? { credential_connection_id: credentialConnectionId } : {}),
           },
           { onConflict: "user_id" },
         );
@@ -80,7 +81,7 @@ serve(async (req) => {
       if (regError) {
         console.error("Error storing SIP registration:", regError);
       } else {
-        console.log("Stored SIP registration for user:", userId, sipUsername);
+        console.log("Stored SIP registration for user:", userId, sipUsername, "credentialConnectionId:", credentialConnectionId);
       }
     };
 
@@ -307,7 +308,7 @@ serve(async (req) => {
       throw new Error("Failed to obtain Telnyx credentials");
     }
 
-    await storeRegistration(sipUsername);
+    await storeRegistration(sipUsername, connectionId);
 
     return new Response(
       JSON.stringify({

@@ -213,7 +213,33 @@ serve(async (req) => {
         // Bridge to WebRTC user if this is an outbound call
         if (clientState?.action === 'bridge_to_webrtc' && clientState?.userSipUri && telnyxApiKey) {
           console.log('Bridging PSTN call to WebRTC user:', clientState.userSipUri);
-          
+
+          // Look up the credential connection ID from the registration table
+          // The PSTN call's connection_id is the Call Control App ID, but to dial
+          // a SIP URI we need the Credential Connection ID that the SIP creds are registered under
+          let credentialConnectionId = payload?.connection_id; // fallback
+          try {
+            const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+            const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+            const { createClient } = await import("https://esm.sh/@supabase/supabase-js@2.81.1?target=deno");
+            const supabase = createClient(supabaseUrl, supabaseServiceKey);
+
+            const { data: regData } = await supabase
+              .from('telnyx_webrtc_registrations')
+              .select('credential_connection_id')
+              .eq('user_id', clientState.userId)
+              .single();
+
+            if (regData?.credential_connection_id) {
+              credentialConnectionId = regData.credential_connection_id;
+              console.log('Using credential connection ID from registration:', credentialConnectionId);
+            } else {
+              console.warn('No credential_connection_id found in registration, falling back to payload.connection_id:', credentialConnectionId);
+            }
+          } catch (err) {
+            console.error('Error looking up credential connection ID:', err);
+          }
+
           // First, dial the WebRTC user to create their call leg
           try {
             const dialResp = await fetch('https://api.telnyx.com/v2/calls', {
@@ -223,7 +249,7 @@ serve(async (req) => {
                 'Content-Type': 'application/json',
               },
               body: JSON.stringify({
-                connection_id: payload?.connection_id,
+                connection_id: credentialConnectionId,
                 to: clientState.userSipUri,
                 from: clientState.fromNumber || payload?.from,
                 webhook_url: `${Deno.env.get('SUPABASE_URL')}/functions/v1/telnyx-call-events`,
