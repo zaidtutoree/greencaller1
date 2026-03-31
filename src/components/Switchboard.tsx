@@ -218,6 +218,21 @@ export const Switchboard = ({ userId, onPickupCall }: SwitchboardProps) => {
         .order('created_at', { ascending: true });
 
       if (error) throw error;
+
+      // Verify queued calls are still alive via Telnyx API
+      const callSids = (data || []).map(q => q.call_sid).filter(Boolean);
+      if (callSids.length > 0) {
+        supabase.functions.invoke('verify-queue-calls', {
+          body: { callSids },
+        }).then(({ data: verifyData }) => {
+          if (verifyData?.abandoned?.length > 0) {
+            console.log('Queue calls verified as abandoned:', verifyData.abandoned);
+            // Remove abandoned calls from the displayed list
+            setQueuedCalls(prev => prev.filter(q => !verifyData.abandoned.includes(q.call_sid)));
+          }
+        }).catch(err => console.warn('Queue verification failed (non-critical):', err));
+      }
+
       setQueuedCalls(data || []);
     } catch (error) {
       console.error('Error fetching queued calls:', error);
