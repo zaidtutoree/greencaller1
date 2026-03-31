@@ -218,32 +218,7 @@ export const Switchboard = ({ userId, onPickupCall }: SwitchboardProps) => {
         .order('created_at', { ascending: true });
 
       if (error) throw error;
-
-      // Auto-clean stale queue entries (older than 3 minutes)
-      // Telnyx webhooks may not deliver call.hangup, so these linger
-      const now = Date.now();
-      const staleThreshold = 3 * 60 * 1000; // 3 minutes
-      const fresh: typeof data = [];
-
-      for (const entry of (data || [])) {
-        const age = now - new Date(entry.created_at).getTime();
-        if (age > staleThreshold) {
-          // Mark as abandoned in background
-          supabase
-            .from('call_queue')
-            .update({ status: 'abandoned' })
-            .eq('id', entry.id)
-            .in('status', ['waiting', 'ringing'])
-            .then(({ error: updateErr }) => {
-              if (updateErr) console.error('Failed to clean stale queue entry:', updateErr);
-              else console.log('Cleaned stale queue entry:', entry.id, entry.from_number);
-            });
-        } else {
-          fresh.push(entry);
-        }
-      }
-
-      setQueuedCalls(fresh);
+      setQueuedCalls(data || []);
     } catch (error) {
       console.error('Error fetching queued calls:', error);
     }

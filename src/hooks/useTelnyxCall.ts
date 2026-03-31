@@ -650,6 +650,22 @@ export const useTelnyxCall = ({ userId, assignedNumber, enabled = true }: UseTel
 
             if (callState === "hangup" || callState === "destroy") {
               console.log("Telnyx call ended — state:", callState, "cause:", call.cause, "causeCode:", call.causeCode, "sipCode:", call.sipCode, "id:", call.id, "direction:", call.direction);
+
+              // Immediately clean up call_queue when an incoming call hangs up before being answered
+              // This handles the case where the caller disconnects before pickup
+              if (callerNumber && callerNumber !== "Unknown" && incomingCallRef.current?.id === call.id) {
+                console.log("Cleaning up call_queue for hung-up caller:", callerNumber);
+                supabase
+                  .from('call_queue')
+                  .update({ status: 'abandoned' })
+                  .eq('from_number', callerNumber)
+                  .in('status', ['waiting', 'ringing'])
+                  .then(({ error: qErr }) => {
+                    if (qErr) console.error("Failed to clean call_queue:", qErr);
+                    else console.log("Call queue cleaned for:", callerNumber);
+                  });
+              }
+
               if (activeCallRef.current?.id === call.id) {
                 resetCallState();
               }

@@ -192,9 +192,9 @@ export const EnterprisePlatform = ({ userId }: EnterprisePlatformProps) => {
       departmentIdsRef.current = departments.map(d => d.id);
     }
 
-    // Clean up stale queue entries (older than 3 minutes) before counting
-    // Telnyx webhooks may not deliver call.hangup, so these linger
-    const staleThreshold = new Date(Date.now() - 3 * 60 * 1000).toISOString();
+    // Safety net: clean up very old queue entries (older than 15 minutes)
+    // Primary cleanup happens in useTelnyxCall when hangup is detected
+    const staleThreshold = new Date(Date.now() - 15 * 60 * 1000).toISOString();
     await supabase
       .from("call_queue")
       .update({ status: "abandoned" })
