@@ -192,6 +192,16 @@ export const EnterprisePlatform = ({ userId }: EnterprisePlatformProps) => {
       departmentIdsRef.current = departments.map(d => d.id);
     }
 
+    // Clean up stale queue entries (older than 3 minutes) before counting
+    // Telnyx webhooks may not deliver call.hangup, so these linger
+    const staleThreshold = new Date(Date.now() - 3 * 60 * 1000).toISOString();
+    await supabase
+      .from("call_queue")
+      .update({ status: "abandoned" })
+      .in("department_id", departmentIdsRef.current)
+      .in("status", ["ringing", "waiting"])
+      .lt("created_at", staleThreshold);
+
     // Count calls in queue with 'ringing' or 'waiting' status
     const { count } = await supabase
       .from("call_queue")
