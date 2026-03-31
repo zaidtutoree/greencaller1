@@ -220,21 +220,21 @@ serve(async (req) => {
           let credentialConnectionId = payload?.connection_id; // fallback
           try {
             const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
-            const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-            const { createClient } = await import("https://esm.sh/@supabase/supabase-js@2.81.1?target=deno");
-            const supabase = createClient(supabaseUrl, supabaseServiceKey);
+            const regResp = await fetch(
+              `${supabaseUrl}/rest/v1/telnyx_webrtc_registrations?user_id=eq.${clientState.userId}&select=credential_connection_id&limit=1`,
+              { headers: supabaseHeaders() },
+            );
 
-            const { data: regData } = await supabase
-              .from('telnyx_webrtc_registrations')
-              .select('credential_connection_id')
-              .eq('user_id', clientState.userId)
-              .single();
-
-            if (regData?.credential_connection_id) {
-              credentialConnectionId = regData.credential_connection_id;
-              console.log('Using credential connection ID from registration:', credentialConnectionId);
+            if (regResp.ok) {
+              const regRows = await regResp.json();
+              if (regRows?.[0]?.credential_connection_id) {
+                credentialConnectionId = regRows[0].credential_connection_id;
+                console.log('Using credential connection ID from registration:', credentialConnectionId);
+              } else {
+                console.warn('No credential_connection_id found in registration, falling back to payload.connection_id:', credentialConnectionId);
+              }
             } else {
-              console.warn('No credential_connection_id found in registration, falling back to payload.connection_id:', credentialConnectionId);
+              console.error('Failed to fetch registration:', await regResp.text());
             }
           } catch (err) {
             console.error('Error looking up credential connection ID:', err);
