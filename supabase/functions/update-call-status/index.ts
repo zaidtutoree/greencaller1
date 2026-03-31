@@ -15,15 +15,55 @@ serve(async (req) => {
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 
-    const { callId, status, duration, direction } = await req.json();
+    const body = await req.json();
+    const { callId, status, duration, direction, action, userId, fromNumber, toNumber, callSid } = body;
 
-    console.log('Update call status request:', { callId, status, duration, direction });
+    console.log('Update call status request:', body);
 
     const headers = {
       'apikey': supabaseKey,
       'Authorization': `Bearer ${supabaseKey}`,
       'Content-Type': 'application/json',
     };
+
+    // Handle 'create' action — INSERT a new call_history record
+    if (action === 'create') {
+      const insertData: Record<string, any> = {
+        user_id: userId,
+        from_number: fromNumber,
+        to_number: toNumber,
+        direction: direction || 'outbound',
+        status: status || 'initiated',
+      };
+      if (callSid) insertData.call_sid = callSid;
+
+      console.log('Inserting new call_history:', insertData);
+
+      const insertRes = await fetch(
+        `${supabaseUrl}/rest/v1/call_history`,
+        {
+          method: 'POST',
+          headers: { ...headers, 'Prefer': 'return=representation' },
+          body: JSON.stringify(insertData),
+        }
+      );
+
+      if (insertRes.ok) {
+        const inserted = await insertRes.json();
+        console.log('Inserted call_history:', inserted?.[0]?.id);
+        return new Response(
+          JSON.stringify({ success: true, inserted: inserted?.[0] }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      } else {
+        const errorText = await insertRes.text();
+        console.error('Insert failed:', errorText);
+        return new Response(
+          JSON.stringify({ success: false, error: errorText }),
+          { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+    }
 
     // Build update data
     const updateData: Record<string, any> = {};

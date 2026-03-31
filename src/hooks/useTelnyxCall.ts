@@ -42,6 +42,9 @@ export const useTelnyxCall = ({ userId, assignedNumber, enabled = true }: UseTel
   const retryCountRef = useRef(0);
   // Track when we're waiting for a bridged call (outbound call initiated via edge function)
   const awaitingBridgeRef = useRef<{ toNumber: string; fromNumber: string } | null>(null);
+  // Track outbound calls placed directly via WebRTC SDK newCall()
+  const makingOutboundRef = useRef(false);
+  const outboundCallIdsRef = useRef<Set<string>>(new Set());
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   // Track call IDs that have been declined / sent to voicemail so the notification
   // handler doesn't re-trigger the incoming call modal when late callUpdate events arrive.
@@ -489,6 +492,48 @@ export const useTelnyxCall = ({ userId, assignedNumber, enabled = true }: UseTel
               from: call.from,
             });
 
+            // Skip calls we placed directly via newCall() — they are outbound, not incoming
+            if (makingOutboundRef.current || outboundCallIdsRef.current.has(call.id)) {
+              // Track the call ID once we see it
+              if (call.id) outboundCallIdsRef.current.add(call.id);
+
+              if (["ringing", "new", "trying", "early"].includes(callState)) {
+                console.log("Outbound SDK call state:", callState, call.id);
+                // Set as active call on first notification
+                if (!activeCallRef.current) {
+                  activeCallRef.current = call;
+                  makingOutboundRef.current = false;
+                }
+              }
+
+              if (callState === "active") {
+                console.log("Outbound SDK call connected:", call.id);
+                activeCallRef.current = call;
+                makingOutboundRef.current = false;
+                attachRemoteStream(call);
+                startDurationTimer();
+                setCallState((prev) => ({
+                  ...prev,
+                  isActive: true,
+                  callId: call.id,
+                }));
+              }
+
+              if (callState === "hangup" || callState === "destroy") {
+                console.log("Outbound SDK call ended:", call.id);
+                outboundCallIdsRef.current.delete(call.id);
+                if (activeCallRef.current?.id === call.id) {
+                  resetCallState();
+                }
+              }
+
+              // Still attach stream on any audio-carrying state
+              if (["trying", "early", "answering", "active"].includes(callState)) {
+                attachRemoteStream(call);
+              }
+              return; // Don't process as incoming
+            }
+
             // Detect incoming calls more robustly
             // TeXML-routed SIP calls may not have direction set correctly
             // Key indicators of incoming call:
@@ -748,8 +793,8 @@ export const useTelnyxCall = ({ userId, assignedNumber, enabled = true }: UseTel
     };
   }, [isClientReady, userId]);
 
-  // Make an outbound call via the telnyx-make-call edge function
-  // The edge function initiates a PSTN call and bridges it to the user's WebRTC client
+  // Make an outbound call directly via the TelnyxRTC SDK's newCall()
+  // This bypasses webhooks entirely — audio flows through WebRTC without server-side bridging
   const makeCall = useCallback(
     async (toNumber: string, record: boolean = false) => {
       if (!assignedNumber) {
@@ -770,11 +815,10 @@ export const useTelnyxCall = ({ userId, assignedNumber, enabled = true }: UseTel
         return;
       }
 
-      // Wait for WebRTC client to be ready (needed to receive the bridged call)
+      // Wait for WebRTC client to be ready
       const waitForReady = async () => {
         if (clientRef.current && isClientReady) return true;
 
-        // Wait up to 10s for the SDK to become ready
         try {
           await Promise.race([
             readyPromiseRef.current ?? Promise.reject(new Error('No Telnyx init in progress')),
@@ -806,10 +850,15 @@ export const useTelnyxCall = ({ userId, assignedNumber, enabled = true }: UseTel
           formattedNumber = "+" + formattedNumber;
         }
 
-        console.log("Making Telnyx call via edge function to:", formattedNumber);
+        console.log("Making direct WebRTC call to:", formattedNumber);
 
-        // Set the awaiting bridge flag so we auto-answer the incoming SIP call
-        awaitingBridgeRef.current = { toNumber: formattedNumber, fromNumber: assignedNumber };
+        // Fire-and-forget: ensure credential connection has outbound voice profile
+        supabase.functions.invoke("telnyx-make-call", {
+          body: { toNumber: formattedNumber, fromNumber: assignedNumber, userId, record, setupOnly: true },
+        }).catch((e: any) => console.warn("Setup-only call failed (non-critical):", e));
+
+        // Set outbound flag BEFORE placing the call so notification handler knows
+        makingOutboundRef.current = true;
 
         setCallState((prev) => ({
           ...prev,
@@ -823,39 +872,38 @@ export const useTelnyxCall = ({ userId, assignedNumber, enabled = true }: UseTel
           description: `Calling ${toNumber} from ${assignedNumber}`,
         });
 
-        // Call the edge function to initiate the PSTN call
-        const { data, error } = await supabase.functions.invoke("telnyx-make-call", {
-          body: {
-            toNumber: formattedNumber,
-            fromNumber: assignedNumber,
-            userId,
-            record,
-          },
+        // Place the call directly via WebRTC SDK — no webhooks needed
+        const call = clientRef.current!.newCall({
+          destinationNumber: formattedNumber,
+          callerNumber: assignedNumber,
+          audio: true,
+          video: false,
         });
 
-        if (error || !data?.success) {
-          console.error("Telnyx make-call error:", error || data?.error);
-          awaitingBridgeRef.current = null; // Clear bridge flag on failure
-          resetCallState();
-          toast({
-            title: "Call failed",
-            description: data?.error || error?.message || "Failed to initiate call.",
-            variant: "destructive",
-          });
-          return;
-        }
+        console.log("WebRTC SDK call placed:", call.id);
 
-        console.log("Telnyx call initiated:", data);
+        // Track this call ID so it doesn't show as incoming
+        if (call.id) outboundCallIdsRef.current.add(call.id);
+        activeCallRef.current = call;
+        makingOutboundRef.current = false;
 
-        // Store the PSTN call control ID for recording purposes
         setCallState((prev) => ({
           ...prev,
-          callId: data.callControlId,
-          pstnCallControlId: data.callControlId, // This is the PSTN leg we can control for recording
+          callId: call.id,
         }));
 
-        // Start the duration timer - the call is being connected
-        startDurationTimer();
+        // Log call to history via edge function
+        supabase.functions.invoke("update-call-status", {
+          body: {
+            action: 'create',
+            userId,
+            fromNumber: assignedNumber,
+            toNumber: formattedNumber,
+            direction: 'outbound',
+            status: 'initiated',
+            callSid: call.id,
+          },
+        }).catch((e: any) => console.warn("Failed to log call to history:", e));
 
         toast({
           title: "Call initiated",
@@ -863,7 +911,7 @@ export const useTelnyxCall = ({ userId, assignedNumber, enabled = true }: UseTel
         });
       } catch (error: any) {
         console.error("Error making Telnyx call:", error);
-        awaitingBridgeRef.current = null; // Clear bridge flag on failure
+        makingOutboundRef.current = false;
         resetCallState();
         toast({
           title: "Call failed",

@@ -136,7 +136,7 @@ serve(async (req) => {
     const telnyxApiKey = Deno.env.get('TELNYX_API_KEY');
     if (!telnyxApiKey) throw new Error('Telnyx API key not configured');
 
-    const { toNumber, fromNumber, userId, record = false } = await req.json();
+    const { toNumber, fromNumber, userId, record = false, setupOnly = false } = await req.json();
 
     if (!toNumber || !fromNumber || !userId) {
       throw new Error('toNumber, fromNumber, userId are required');
@@ -148,6 +148,21 @@ serve(async (req) => {
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const supabase = createClient(supabaseUrl, supabaseKey);
+
+    // If setupOnly, just ensure credential connection has outbound voice profile and return
+    if (setupOnly) {
+      console.log('Setup-only mode: ensuring outbound voice profile is configured');
+      try {
+        const outboundProfileId = await getOrCreateOutboundVoiceProfileId(telnyxApiKey);
+        await ensureCredentialConnectionHasOutboundProfile(telnyxApiKey, outboundProfileId);
+      } catch (e) {
+        console.warn('Setup-only: non-critical error:', e);
+      }
+      return new Response(
+        JSON.stringify({ success: true, setupOnly: true }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
 
     // Check subscription status - block if not active or trialing
     const { data: userProfile } = await supabase
