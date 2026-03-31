@@ -338,6 +338,15 @@ export const useTelnyxCall = ({ userId, assignedNumber, enabled = true }: UseTel
           if (credsRef.current?.sipUsername && credsRef.current?.sipPassword) {
             writeStoredCreds(userId, credsRef.current);
           }
+          // Pre-acquire microphone permission so incoming/outgoing calls connect instantly
+          // without waiting for the browser permission prompt
+          navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
+            console.log("Microphone permission pre-acquired");
+            // Stop the tracks immediately — we just needed the permission grant
+            stream.getTracks().forEach((t) => t.stop());
+          }).catch((e) => {
+            console.warn("Microphone permission not granted:", e);
+          });
         });
 
         // Handle errors
