@@ -193,8 +193,8 @@ export const EnterprisePlatform = ({ userId }: EnterprisePlatformProps) => {
     }
 
     // Clean up stale queue entries where hold music stopped checking in (caller hung up)
-    // Hold music updates updated_at every ~10s; if it's been >20s, caller is gone
-    const staleThreshold = new Date(Date.now() - 20 * 1000).toISOString();
+    // Hold music updates updated_at every ~3s; if it's been >8s, caller is gone
+    const staleThreshold = new Date(Date.now() - 8 * 1000).toISOString();
     await supabase
       .from("call_queue")
       .update({ status: "abandoned" })

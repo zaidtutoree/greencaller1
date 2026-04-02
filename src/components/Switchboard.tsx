@@ -219,18 +219,18 @@ export const Switchboard = ({ userId, onPickupCall }: SwitchboardProps) => {
 
       if (error) throw error;
 
-      // Check if any queued calls have gone stale (hold music hasn't checked in for 20s)
-      // The hold music function updates updated_at every ~10 seconds while the caller is on the line.
-      // If updated_at is older than 20s, the caller has hung up.
+      // Check if any queued calls have gone stale (hold music hasn't checked in)
+      // The hold music function updates updated_at every ~3 seconds while the caller is on the line.
+      // If updated_at is older than 8s, the caller has hung up.
       const now = Date.now();
-      const staleMs = 20 * 1000;
+      const staleMs = 8 * 1000;
       const fresh: typeof data = [];
 
       for (const entry of (data || [])) {
         const lastUpdate = new Date(entry.updated_at || entry.created_at).getTime();
         const age = now - lastUpdate;
 
-        // Give new entries 20s grace period before checking staleness
+        // Give new entries 8s grace period before checking staleness
         const entryAge = now - new Date(entry.created_at).getTime();
         if (entryAge > staleMs && age > staleMs) {
           // Caller is gone — mark as abandoned

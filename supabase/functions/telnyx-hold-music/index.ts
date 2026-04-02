@@ -132,17 +132,22 @@ serve(async (req) => {
     const nextIteration = iteration + 1;
     const checkUrl = `${supabaseUrl}/functions/v1/telnyx-hold-music?callSid=${encodeURIComponent(callSid)}&iteration=${nextIteration}`;
 
-    // Every 3rd iteration, say the patience message
-    const sayMessage = nextIteration % 3 === 0
+    // Every 10th iteration (~30s), say the patience message
+    const sayMessage = nextIteration % 10 === 0
       ? `<Say voice="Polly.Amy-Neural">Thank you for your patience. An agent will be with you shortly.</Say>`
       : '';
 
-    // Play music for just ~10 seconds (loop=1), then redirect to check again
+    // Use Gather with a short timeout as the loop mechanism
+    // Gather calls its action URL when it finishes (timeout or hangup)
+    // This gives us ~3 second loops for fast heartbeat updates
+    const actionUrl = checkUrl.replace(/&/g, '&amp;');
     const texml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Play loop="1">https://s3.amazonaws.com/com.twilio.sounds.music/ClockworkWaltz.mp3</Play>
   ${sayMessage}
-  <Redirect>${checkUrl.replace(/&/g, '&amp;')}</Redirect>
+  <Gather input="dtmf" timeout="3" action="${actionUrl}" numDigits="1">
+    <Play>https://s3.amazonaws.com/com.twilio.sounds.music/ClockworkWaltz.mp3</Play>
+  </Gather>
+  <Redirect>${actionUrl}</Redirect>
 </Response>`;
 
     return new Response(texml, {
