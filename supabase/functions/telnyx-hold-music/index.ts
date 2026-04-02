@@ -111,6 +111,23 @@ serve(async (req) => {
       }
     }
 
+    // Update last_heartbeat so the frontend knows this caller is still on the line
+    if (callSid) {
+      await fetch(
+        `${supabaseUrl}/rest/v1/call_queue?call_sid=eq.${encodeURIComponent(callSid)}&status=in.(waiting,ringing)`,
+        {
+          method: 'PATCH',
+          headers: {
+            'apikey': supabaseKey,
+            'Authorization': `Bearer ${supabaseKey}`,
+            'Content-Type': 'application/json',
+            'Prefer': 'return=minimal',
+          },
+          body: JSON.stringify({ updated_at: new Date().toISOString() }),
+        }
+      );
+    }
+
     // Not picked up yet - play a short segment and check again quickly
     const nextIteration = iteration + 1;
     const checkUrl = `${supabaseUrl}/functions/v1/telnyx-hold-music?callSid=${encodeURIComponent(callSid)}&iteration=${nextIteration}`;

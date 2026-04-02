@@ -192,14 +192,15 @@ export const EnterprisePlatform = ({ userId }: EnterprisePlatformProps) => {
       departmentIdsRef.current = departments.map(d => d.id);
     }
 
-    // Safety net: clean up very old queue entries (older than 15 minutes)
-    // Primary cleanup happens in useTelnyxCall when hangup is detected
-    const staleThreshold = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+    // Clean up stale queue entries where hold music stopped checking in (caller hung up)
+    // Hold music updates updated_at every ~10s; if it's been >20s, caller is gone
+    const staleThreshold = new Date(Date.now() - 20 * 1000).toISOString();
     await supabase
       .from("call_queue")
       .update({ status: "abandoned" })
       .in("department_id", departmentIdsRef.current)
       .in("status", ["ringing", "waiting"])
+      .lt("updated_at", staleThreshold)
       .lt("created_at", staleThreshold);
 
     // Count calls in queue with 'ringing' or 'waiting' status
