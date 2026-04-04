@@ -220,7 +220,7 @@ export const Switchboard = ({ userId, onPickupCall }: SwitchboardProps) => {
       if (error) throw error;
 
       // Verify queued calls that have been waiting for at least 5 seconds
-      // (new calls may briefly return 404 from Telnyx before they're registered)
+      // Uses checkOnly:true so it does NOT update the DB — only tells us which are gone
       const now = Date.now();
       const minAge = 5 * 1000;
       const staleCallSids = (data || [])
@@ -229,10 +229,12 @@ export const Switchboard = ({ userId, onPickupCall }: SwitchboardProps) => {
 
       if (staleCallSids.length > 0) {
         supabase.functions.invoke('verify-queue-calls', {
-          body: { callSids: staleCallSids },
+          body: { callSids: staleCallSids, checkOnly: true },
         }).then(({ data: verifyData }) => {
           if (verifyData?.abandoned?.length > 0) {
             console.log('Calls verified as abandoned:', verifyData.abandoned);
+            // Remove from displayed list only — don't update DB status
+            // so that Take Call can still proceed if this was a false positive
             setQueuedCalls(prev => prev.filter(q => !verifyData.abandoned.includes(q.call_sid)));
           }
         }).catch(() => {});
@@ -476,22 +478,6 @@ export const Switchboard = ({ userId, onPickupCall }: SwitchboardProps) => {
           title: 'Error',
           description: 'You must be logged in',
           variant: 'destructive',
-        });
-        return;
-      }
-
-      // Verify caller is still waiting before attempting pickup
-      const { data: freshEntry } = await supabase
-        .from('call_queue')
-        .select('status, updated_at, created_at')
-        .eq('id', queuedCall.id)
-        .single();
-
-      if (!freshEntry || (freshEntry.status !== 'waiting' && freshEntry.status !== 'ringing')) {
-        setQueuedCalls(prev => prev.filter(c => c.id !== queuedCall.id));
-        toast({
-          title: 'Caller hung up',
-          description: 'The caller is no longer waiting',
         });
         return;
       }
