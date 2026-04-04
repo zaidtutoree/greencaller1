@@ -219,32 +219,22 @@ export const Switchboard = ({ userId, onPickupCall }: SwitchboardProps) => {
 
       if (error) throw error;
 
-      // Detect stale queue entries where hold music loop has stopped (caller hung up).
-      // Hold music updates updated_at every ~3-5 seconds via Gather loop.
-      // If updated_at hasn't been refreshed in 12 seconds, caller is gone.
-      // Skip entries younger than 12 seconds (they haven't had time for a heartbeat yet).
-      const now = Date.now();
-      const staleMs = 12 * 1000;
-      const fresh: typeof data = [];
-
-      for (const entry of (data || [])) {
-        const lastUpdate = new Date(entry.updated_at || entry.created_at).getTime();
-        const entryAge = now - new Date(entry.created_at).getTime();
-        const heartbeatAge = now - lastUpdate;
-
-        if (entryAge > staleMs && heartbeatAge > staleMs) {
-          supabase
-            .from('call_queue')
-            .update({ status: 'abandoned' })
-            .eq('id', entry.id)
-            .in('status', ['waiting', 'ringing'])
-            .then(() => console.log('Removed stale queue entry:', entry.from_number));
-        } else {
-          fresh.push(entry);
+      // Verify each queued call is still alive by checking active calls on the department number
+      if ((data || []).length > 0) {
+        const callSids = data!.map(q => q.call_sid).filter(Boolean);
+        if (callSids.length > 0) {
+          supabase.functions.invoke('verify-queue-calls', {
+            body: { callSids },
+          }).then(({ data: verifyData }) => {
+            if (verifyData?.abandoned?.length > 0) {
+              console.log('Calls no longer active:', verifyData.abandoned);
+              setQueuedCalls(prev => prev.filter(q => !verifyData.abandoned.includes(q.call_sid)));
+            }
+          }).catch(() => {});
         }
       }
 
-      setQueuedCalls(fresh);
+      setQueuedCalls(data || []);
     } catch (error) {
       console.error('Error fetching queued calls:', error);
     }
