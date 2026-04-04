@@ -220,11 +220,11 @@ export const Switchboard = ({ userId, onPickupCall }: SwitchboardProps) => {
       if (error) throw error;
 
       // Detect stale queue entries where hold music loop has stopped (caller hung up).
-      // Hold music updates updated_at every ~3-5 seconds via Gather loop.
-      // If updated_at hasn't been refreshed in 12 seconds, caller is gone.
-      // Skip entries younger than 12 seconds (they haven't had time for a heartbeat yet).
+      // Hold music updates updated_at every ~4-5 seconds via short Pause+Redirect loop.
+      // If updated_at hasn't been refreshed in 10 seconds, caller is gone.
+      // Skip entries younger than 10 seconds (they haven't had time for a heartbeat yet).
       const now = Date.now();
-      const staleMs = 12 * 1000;
+      const staleMs = 10 * 1000;
       const fresh: typeof data = [];
 
       for (const entry of (data || [])) {
