@@ -218,38 +218,7 @@ export const Switchboard = ({ userId, onPickupCall }: SwitchboardProps) => {
         .order('created_at', { ascending: true });
 
       if (error) throw error;
-
-      // Check if any queued calls have gone stale (hold music hasn't checked in)
-      // The hold music function updates updated_at every ~3 seconds while the caller is on the line.
-      // If updated_at is older than 30s, the caller has hung up.
-      // Using 30s to account for network latency, Telnyx processing delays, and music playback time.
-      const now = Date.now();
-      const staleMs = 30 * 1000;
-      const fresh: typeof data = [];
-
-      for (const entry of (data || [])) {
-        const lastUpdate = new Date(entry.updated_at || entry.created_at).getTime();
-        const age = now - lastUpdate;
-
-        // Give new entries 30s grace period before checking staleness
-        const entryAge = now - new Date(entry.created_at).getTime();
-        if (entryAge > staleMs && age > staleMs) {
-          // Caller is gone — mark as abandoned
-          supabase
-            .from('call_queue')
-            .update({ status: 'abandoned' })
-            .eq('id', entry.id)
-            .in('status', ['waiting', 'ringing'])
-            .then(({ error: updateErr }) => {
-              if (updateErr) console.error('Failed to clean stale queue entry:', updateErr);
-              else console.log('Cleaned stale queue entry (no heartbeat):', entry.id, entry.from_number);
-            });
-        } else {
-          fresh.push(entry);
-        }
-      }
-
-      setQueuedCalls(fresh);
+      setQueuedCalls(data || []);
     } catch (error) {
       console.error('Error fetching queued calls:', error);
     }
