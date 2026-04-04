@@ -218,6 +218,26 @@ export const Switchboard = ({ userId, onPickupCall }: SwitchboardProps) => {
         .order('created_at', { ascending: true });
 
       if (error) throw error;
+
+      // Verify queued calls that have been waiting for at least 30 seconds
+      // (new calls may briefly return 404 from Telnyx before they're registered)
+      const now = Date.now();
+      const minAge = 30 * 1000;
+      const staleCallSids = (data || [])
+        .filter(q => q.call_sid && (now - new Date(q.created_at).getTime()) > minAge)
+        .map(q => q.call_sid);
+
+      if (staleCallSids.length > 0) {
+        supabase.functions.invoke('verify-queue-calls', {
+          body: { callSids: staleCallSids },
+        }).then(({ data: verifyData }) => {
+          if (verifyData?.abandoned?.length > 0) {
+            console.log('Calls verified as abandoned:', verifyData.abandoned);
+            setQueuedCalls(prev => prev.filter(q => !verifyData.abandoned.includes(q.call_sid)));
+          }
+        }).catch(() => {});
+      }
+
       setQueuedCalls(data || []);
     } catch (error) {
       console.error('Error fetching queued calls:', error);
