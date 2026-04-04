@@ -19,7 +19,7 @@ serve(async (req) => {
 
     if (!telnyxApiKey) throw new Error('TELNYX_API_KEY not configured');
 
-    const { callSids } = await req.json();
+    const { callSids, checkOnly = false } = await req.json();
     if (!callSids || !Array.isArray(callSids) || callSids.length === 0) {
       return new Response(
         JSON.stringify({ success: true, abandoned: [] }),
@@ -69,16 +69,18 @@ serve(async (req) => {
       }
     }
 
-    // Mark abandoned using service role key (bypasses RLS)
-    for (const callSid of abandoned) {
-      await fetch(
-        `${supabaseUrl}/rest/v1/call_queue?call_sid=eq.${encodeURIComponent(callSid)}&status=in.(waiting,ringing)`,
-        {
-          method: 'PATCH',
-          headers: { ...dbHeaders, 'Prefer': 'return=minimal' },
-          body: JSON.stringify({ status: 'abandoned' }),
-        }
-      );
+    // Mark abandoned using service role key (bypasses RLS) — skip if checkOnly
+    if (!checkOnly) {
+      for (const callSid of abandoned) {
+        await fetch(
+          `${supabaseUrl}/rest/v1/call_queue?call_sid=eq.${encodeURIComponent(callSid)}&status=in.(waiting,ringing)`,
+          {
+            method: 'PATCH',
+            headers: { ...dbHeaders, 'Prefer': 'return=minimal' },
+            body: JSON.stringify({ status: 'abandoned' }),
+          }
+        );
+      }
     }
 
     if (abandoned.length > 0) {
