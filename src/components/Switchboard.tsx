@@ -492,15 +492,11 @@ export const Switchboard = ({ userId, onPickupCall }: SwitchboardProps) => {
         return;
       }
 
-      // Also check heartbeat — if hold music hasn't checked in recently, caller is gone
-      const lastUpdate = new Date(freshEntry.updated_at || freshEntry.created_at).getTime();
-      const heartbeatAge = Date.now() - lastUpdate;
-      if (heartbeatAge > 30000) {
-        // Mark as abandoned and remove from list
-        await supabase
-          .from('call_queue')
-          .update({ status: 'abandoned' })
-          .eq('id', queuedCall.id);
+      // Verify the caller is still on an active call via Telnyx API
+      const { data: verifyData } = await supabase.functions.invoke('verify-queue-calls', {
+        body: { callSids: [queuedCall.call_sid] },
+      });
+      if (verifyData?.abandoned?.includes(queuedCall.call_sid)) {
         setQueuedCalls(prev => prev.filter(c => c.id !== queuedCall.id));
         toast({
           title: 'Caller hung up',

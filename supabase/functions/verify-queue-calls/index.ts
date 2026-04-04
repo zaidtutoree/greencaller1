@@ -15,12 +15,9 @@ serve(async (req) => {
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 
-    if (!telnyxApiKey) {
-      throw new Error('TELNYX_API_KEY not configured');
-    }
+    if (!telnyxApiKey) throw new Error('TELNYX_API_KEY not configured');
 
     const { callSids } = await req.json();
-
     if (!callSids || !Array.isArray(callSids) || callSids.length === 0) {
       return new Response(
         JSON.stringify({ success: true, abandoned: [] }),
@@ -28,90 +25,103 @@ serve(async (req) => {
       );
     }
 
-    // Get all currently active calls from Telnyx
-    // This returns all live calls on the account
-    let activeCalls: Set<string> = new Set();
+    const dbHeaders = {
+      'apikey': supabaseKey,
+      'Authorization': `Bearer ${supabaseKey}`,
+      'Content-Type': 'application/json',
+    };
+
+    // Get all active calls from Telnyx and build a set of all active phone numbers
+    const activeNumbers = new Set<string>();
+    const activeIds = new Set<string>();
+
     try {
-      const resp = await fetch('https://api.telnyx.com/v2/calls', {
+      // Fetch active calls - try with pagination
+      const resp = await fetch('https://api.telnyx.com/v2/calls?page[size]=250', {
         headers: { 'Authorization': `Bearer ${telnyxApiKey}` },
       });
 
       if (resp.ok) {
         const data = await resp.json();
         const calls = data?.data || [];
-        // Collect all active call session IDs, call control IDs, and caller/callee numbers
+        console.log('Telnyx active calls:', calls.length);
+
         for (const call of calls) {
-          if (call.call_session_id) activeCalls.add(call.call_session_id);
-          if (call.call_control_id) activeCalls.add(call.call_control_id);
-          if (call.call_leg_id) activeCalls.add(call.call_leg_id);
-          // Also track by from/to numbers for TeXML calls where CallSid is different
-          if (call.from) activeCalls.add(call.from);
-          if (call.to) activeCalls.add(call.to);
+          // Track all identifiers
+          if (call.call_control_id) activeIds.add(call.call_control_id);
+          if (call.call_session_id) activeIds.add(call.call_session_id);
+          if (call.call_leg_id) activeIds.add(call.call_leg_id);
+
+          // Normalize and track phone numbers
+          const normalize = (n: string) => n?.replace(/[^0-9]/g, '') || '';
+          if (call.from) {
+            activeNumbers.add(normalize(call.from));
+          }
+          if (call.to) {
+            activeNumbers.add(normalize(call.to));
+          }
         }
-        console.log('Active calls on account:', calls.length, 'tracking', activeCalls.size, 'identifiers');
+        console.log('Active numbers:', [...activeNumbers].slice(0, 10), 'Active IDs:', activeIds.size);
       } else {
-        console.error('Failed to list active calls:', resp.status, await resp.text());
-        // If we can't check, don't mark anything as abandoned
+        const errText = await resp.text();
+        console.error('Failed to fetch active calls:', resp.status, errText);
         return new Response(
           JSON.stringify({ success: true, abandoned: [] }),
           { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
       }
     } catch (err) {
-      console.error('Error listing active calls:', err);
+      console.error('Error fetching active calls:', err);
       return new Response(
         JSON.stringify({ success: true, abandoned: [] }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    // For each queued call, check if it (or its caller number) is still in an active call
-    const headers = {
-      'apikey': supabaseKey,
-      'Authorization': `Bearer ${supabaseKey}`,
-      'Content-Type': 'application/json',
-    };
-
-    // Get the from_numbers for the queued calls so we can cross-reference
+    // Get queue entries with their phone numbers
     const queueResp = await fetch(
-      `${supabaseUrl}/rest/v1/call_queue?call_sid=in.(${callSids.map(s => `"${s}"`).join(',')})&select=call_sid,from_number,to_number`,
+      `${supabaseUrl}/rest/v1/call_queue?call_sid=in.(${callSids.map(s => `"${s}"`).join(',')})&select=call_sid,from_number,to_number&status=in.(waiting,ringing)`,
       { headers: { 'apikey': supabaseKey, 'Authorization': `Bearer ${supabaseKey}` } }
     );
 
     const queueEntries = queueResp.ok ? await queueResp.json() : [];
     const abandoned: string[] = [];
+    const normalize = (n: string) => n?.replace(/[^0-9]/g, '') || '';
 
     for (const entry of queueEntries) {
-      const callSid = entry.call_sid;
-      const fromNumber = entry.from_number;
-      const toNumber = entry.to_number;
+      const fromNorm = normalize(entry.from_number);
 
-      // Check if call_sid, from_number, or to_number appears in active calls
-      const isActive = activeCalls.has(callSid) ||
-        activeCalls.has(fromNumber) ||
-        activeCalls.has(toNumber) ||
-        // Also check with/without + prefix
-        activeCalls.has('+' + fromNumber) ||
-        activeCalls.has(fromNumber?.replace('+', ''));
+      // Check if the caller's number appears in any active call
+      const callerActive = activeNumbers.has(fromNorm);
+      // Also check if the call_sid matches any active call identifier
+      const sidActive = activeIds.has(entry.call_sid);
 
-      if (!isActive) {
-        console.log('Call no longer active:', callSid, fromNumber);
-        abandoned.push(callSid);
+      console.log('Queue entry check:', {
+        callSid: entry.call_sid,
+        from: entry.from_number,
+        fromNorm,
+        callerActive,
+        sidActive,
+      });
+
+      if (!callerActive && !sidActive) {
+        abandoned.push(entry.call_sid);
       }
     }
 
-    // Mark abandoned calls in the database
+    // Mark abandoned calls using service role key (bypasses RLS)
+    for (const callSid of abandoned) {
+      await fetch(
+        `${supabaseUrl}/rest/v1/call_queue?call_sid=eq.${encodeURIComponent(callSid)}&status=in.(waiting,ringing)`,
+        {
+          method: 'PATCH',
+          headers: { ...dbHeaders, 'Prefer': 'return=minimal' },
+          body: JSON.stringify({ status: 'abandoned' }),
+        }
+      );
+    }
+
     if (abandoned.length > 0) {
-      for (const callSid of abandoned) {
-        await fetch(
-          `${supabaseUrl}/rest/v1/call_queue?call_sid=eq.${encodeURIComponent(callSid)}&status=in.(waiting,ringing)`,
-          {
-            method: 'PATCH',
-            headers: { ...headers, 'Prefer': 'return=minimal' },
-            body: JSON.stringify({ status: 'abandoned' }),
-          }
-        );
-      }
       console.log('Marked as abandoned:', abandoned);
     }
 
