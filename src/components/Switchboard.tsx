@@ -496,23 +496,6 @@ export const Switchboard = ({ userId, onPickupCall }: SwitchboardProps) => {
         return;
       }
 
-      // Verify the caller is still on an active call via Telnyx API
-      const { data: verifyData } = await supabase.functions.invoke('verify-queue-calls', {
-        body: { callSids: [queuedCall.call_sid], checkOnly: true },
-      });
-      if (verifyData?.abandoned?.includes(queuedCall.call_sid)) {
-        // Mark as abandoned via edge function (bypasses RLS)
-        await supabase.functions.invoke('verify-queue-calls', {
-          body: { callSids: [queuedCall.call_sid] },
-        });
-        setQueuedCalls(prev => prev.filter(c => c.id !== queuedCall.id));
-        toast({
-          title: 'Caller hung up',
-          description: 'The caller is no longer waiting',
-        });
-        return;
-      }
-
       toast({
         title: 'Connecting...',
         description: 'Picking up the call',
