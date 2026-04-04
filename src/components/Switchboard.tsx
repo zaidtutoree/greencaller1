@@ -219,10 +219,10 @@ export const Switchboard = ({ userId, onPickupCall }: SwitchboardProps) => {
 
       if (error) throw error;
 
-      // Verify queued calls that have been waiting for at least 30 seconds
+      // Verify queued calls that have been waiting for at least 5 seconds
       // (new calls may briefly return 404 from Telnyx before they're registered)
       const now = Date.now();
-      const minAge = 30 * 1000;
+      const minAge = 5 * 1000;
       const staleCallSids = (data || [])
         .filter(q => q.call_sid && (now - new Date(q.created_at).getTime()) > minAge)
         .map(q => q.call_sid);
