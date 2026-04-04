@@ -1,19 +1,35 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 
-// TeXML endpoint that plays hold music and frequently checks if agent has picked up
-// If picked up, redirects the call to dial the agent's SIP
+// TeXML endpoint that plays hold music for callers waiting in department queue.
+// Used as Conference waitUrl — Telnyx calls this to get music to play.
+// Also updates heartbeat and checks if an agent has picked up.
 serve(async (req) => {
   const url = new URL(req.url);
   const callSid = url.searchParams.get('callSid') || '';
-  const iteration = parseInt(url.searchParams.get('iteration') || '0');
   const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
   const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 
-  try {
-    console.log('Hold music requested for call:', callSid, 'iteration:', iteration);
+  const headers = {
+    'apikey': supabaseKey,
+    'Authorization': `Bearer ${supabaseKey}`,
+    'Content-Type': 'application/json',
+  };
 
-    // Check if this call has been picked up by an agent
+  try {
+    console.log('Hold music requested for call:', callSid);
+
     if (callSid) {
+      // Update heartbeat so frontend knows caller is still on the line
+      await fetch(
+        `${supabaseUrl}/rest/v1/call_queue?call_sid=eq.${encodeURIComponent(callSid)}&status=in.(waiting,ringing)`,
+        {
+          method: 'PATCH',
+          headers: { ...headers, 'Prefer': 'return=minimal' },
+          body: JSON.stringify({ updated_at: new Date().toISOString() }),
+        }
+      );
+
+      // Check queue status
       const queueResponse = await fetch(
         `${supabaseUrl}/rest/v1/call_queue?call_sid=eq.${encodeURIComponent(callSid)}&select=status,picked_up_by,from_number`,
         {
@@ -30,7 +46,7 @@ serve(async (req) => {
         const queueData = Array.isArray(queueArr) && queueArr.length > 0 ? queueArr[0] : null;
         console.log('Queue status check:', { status: queueData?.status, picked_up_by: queueData?.picked_up_by });
 
-        // If caller hung up or call completed, stop the hold music loop
+        // If caller hung up or call completed, stop
         if (queueData?.status === 'abandoned' || queueData?.status === 'completed') {
           console.log('Call queue status is terminal:', queueData.status);
           return new Response(
@@ -39,8 +55,8 @@ serve(async (req) => {
           );
         }
 
+        // If agent picked up, transfer the call
         if (queueData?.status === 'picked_up' && queueData?.picked_up_by) {
-          // Agent has picked up - get their SIP details and transfer the call
           console.log('Agent picked up! Getting SIP details for user:', queueData.picked_up_by);
 
           const regResponse = await fetch(
@@ -53,18 +69,14 @@ serve(async (req) => {
             }
           );
 
-          console.log('SIP registration lookup response status:', regResponse.status);
-
           if (regResponse.ok) {
             const regArr = await regResponse.json();
             const regData = Array.isArray(regArr) && regArr.length > 0 ? regArr[0] : null;
-            console.log('SIP registration data:', regData);
 
             if (regData?.sip_username) {
               const sipUri = `sip:${regData.sip_username}@sip.telnyx.com`;
               console.log('Agent picked up - transferring call to:', sipUri);
 
-              // Escape caller number for XML
               const callerNumber = (queueData.from_number || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
               // Update queue status to connected
@@ -72,12 +84,7 @@ serve(async (req) => {
                 `${supabaseUrl}/rest/v1/call_queue?call_sid=eq.${encodeURIComponent(callSid)}`,
                 {
                   method: 'PATCH',
-                  headers: {
-                    'apikey': supabaseKey,
-                    'Authorization': `Bearer ${supabaseKey}`,
-                    'Content-Type': 'application/json',
-                    'Prefer': 'return=minimal',
-                  },
+                  headers: { ...headers, 'Prefer': 'return=minimal' },
                   body: JSON.stringify({
                     status: 'connected',
                     connected_at: new Date().toISOString()
@@ -85,10 +92,7 @@ serve(async (req) => {
                 }
               );
 
-              // Transfer the call to the agent's SIP endpoint
               const statusCallbackUrl = `${supabaseUrl}/functions/v1/telnyx-call-events`;
-
-              console.log('Returning TeXML to transfer call to agent SIP');
 
               return new Response(
                 `<?xml version="1.0" encoding="UTF-8"?>
@@ -101,68 +105,28 @@ serve(async (req) => {
 </Response>`,
                 { headers: { 'Content-Type': 'application/xml' } }
               );
-            } else {
-              console.log('No sip_username found in registration data');
             }
-          } else {
-            console.log('SIP registration lookup failed:', await regResponse.text());
           }
         }
       }
     }
 
-    // Update last_heartbeat so the frontend knows this caller is still on the line
-    if (callSid) {
-      await fetch(
-        `${supabaseUrl}/rest/v1/call_queue?call_sid=eq.${encodeURIComponent(callSid)}&status=in.(waiting,ringing)`,
-        {
-          method: 'PATCH',
-          headers: {
-            'apikey': supabaseKey,
-            'Authorization': `Bearer ${supabaseKey}`,
-            'Content-Type': 'application/json',
-            'Prefer': 'return=minimal',
-          },
-          body: JSON.stringify({ updated_at: new Date().toISOString() }),
-        }
-      );
-    }
-
-    // Not picked up yet - play a short segment and check again quickly
-    const nextIteration = iteration + 1;
-    const checkUrl = `${supabaseUrl}/functions/v1/telnyx-hold-music?callSid=${encodeURIComponent(callSid)}&iteration=${nextIteration}`;
-
-    // Every 10th iteration (~30s), say the patience message
-    const sayMessage = nextIteration % 10 === 0
-      ? `<Say voice="Polly.Amy-Neural">Thank you for your patience. An agent will be with you shortly.</Say>`
-      : '';
-
-    // Use Gather with a short timeout as the loop mechanism
-    // Gather calls its action URL when it finishes (timeout or hangup)
-    // This gives us ~3 second loops for fast heartbeat updates
-    const actionUrl = checkUrl.replace(/&/g, '&amp;');
-    const texml = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  ${sayMessage}
-  <Gather input="dtmf" timeout="3" action="${actionUrl}" numDigits="1">
-    <Play>https://s3.amazonaws.com/com.twilio.sounds.music/ClockworkWaltz.mp3</Play>
-  </Gather>
-  <Redirect>${actionUrl}</Redirect>
-</Response>`;
-
-    return new Response(texml, {
-      headers: { 'Content-Type': 'application/xml' },
-    });
-  } catch (error) {
-    console.error('Hold music error:', error);
-    // ALWAYS return valid TeXML even on error - never let Telnyx show "application error"
-    const fallbackUrl = `${supabaseUrl}/functions/v1/telnyx-hold-music?callSid=${encodeURIComponent(callSid)}&iteration=${iteration}`;
+    // Play hold music — Conference waitUrl loops this automatically
     return new Response(
       `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say voice="Polly.Amy-Neural">Please continue to hold.</Say>
-  <Pause length="3"/>
-  <Redirect>${fallbackUrl.replace(/&/g, '&amp;')}</Redirect>
+  <Play>https://s3.amazonaws.com/com.twilio.sounds.music/ClockworkWaltz.mp3</Play>
+  <Say voice="Polly.Amy-Neural">Thank you for your patience. An agent will be with you shortly.</Say>
+  <Play>https://s3.amazonaws.com/com.twilio.sounds.music/ClockworkWaltz.mp3</Play>
+</Response>`,
+      { headers: { 'Content-Type': 'application/xml' } }
+    );
+  } catch (error) {
+    console.error('Hold music error:', error);
+    return new Response(
+      `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Play>https://s3.amazonaws.com/com.twilio.sounds.music/ClockworkWaltz.mp3</Play>
 </Response>`,
       { headers: { 'Content-Type': 'application/xml' } }
     );

@@ -494,11 +494,28 @@ export const Switchboard = ({ userId, onPickupCall }: SwitchboardProps) => {
       // Verify caller is still waiting before attempting pickup
       const { data: freshEntry } = await supabase
         .from('call_queue')
-        .select('status')
+        .select('status, updated_at, created_at')
         .eq('id', queuedCall.id)
         .single();
 
       if (!freshEntry || (freshEntry.status !== 'waiting' && freshEntry.status !== 'ringing')) {
+        setQueuedCalls(prev => prev.filter(c => c.id !== queuedCall.id));
+        toast({
+          title: 'Caller hung up',
+          description: 'The caller is no longer waiting',
+        });
+        return;
+      }
+
+      // Also check heartbeat — if hold music hasn't checked in recently, caller is gone
+      const lastUpdate = new Date(freshEntry.updated_at || freshEntry.created_at).getTime();
+      const heartbeatAge = Date.now() - lastUpdate;
+      if (heartbeatAge > 30000) {
+        // Mark as abandoned and remove from list
+        await supabase
+          .from('call_queue')
+          .update({ status: 'abandoned' })
+          .eq('id', queuedCall.id);
         setQueuedCalls(prev => prev.filter(c => c.id !== queuedCall.id));
         toast({
           title: 'Caller hung up',

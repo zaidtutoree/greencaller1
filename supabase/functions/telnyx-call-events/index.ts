@@ -139,7 +139,22 @@ serve(async (req) => {
         // Update call_queue entry to terminal status
         const terminalStatuses = ['completed', 'busy', 'no-answer', 'failed'];
         if (terminalStatuses.includes(status)) {
-          const queueStatus = (status === 'completed') ? 'completed' : 'abandoned';
+          // Check current queue status to distinguish: if still 'waiting'/'ringing',
+          // the caller hung up before being picked up → mark as 'abandoned'
+          const supabaseUrlForQueue = Deno.env.get('SUPABASE_URL')!;
+          const queueCheckUrl = `${supabaseUrlForQueue}/rest/v1/call_queue?call_sid=eq.${encodeURIComponent(callSid)}&select=status`;
+          const queueCheckRes = await fetch(queueCheckUrl, { headers: supabaseHeaders() });
+          let queueStatus = (status === 'completed') ? 'completed' : 'abandoned';
+          if (queueCheckRes.ok) {
+            const queueArr = await queueCheckRes.json();
+            if (Array.isArray(queueArr) && queueArr.length > 0) {
+              const currentQueueStatus = queueArr[0].status;
+              if (currentQueueStatus === 'waiting' || currentQueueStatus === 'ringing') {
+                queueStatus = 'abandoned';
+                console.log('Caller hung up while still waiting in queue — marking as abandoned');
+              }
+            }
+          }
           await supabaseUpdate('call_queue', { status: queueStatus }, { call_sid: callSid });
           console.log('Updated call_queue status to:', queueStatus);
         }
