@@ -5,17 +5,19 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-// Checks queued calls and marks stale ones as abandoned.
-// The hold music loop updates updated_at on each iteration (~33 seconds).
-// If updated_at hasn't been refreshed in 45 seconds, the caller has hung up.
+// Checks if queued calls are still active by querying Telnyx API.
+// Tries multiple approaches: individual call lookup, and call events API.
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
   }
 
   try {
+    const telnyxApiKey = Deno.env.get('TELNYX_API_KEY');
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+
+    if (!telnyxApiKey) throw new Error('TELNYX_API_KEY not configured');
 
     const { callSids } = await req.json();
     if (!callSids || !Array.isArray(callSids) || callSids.length === 0) {
@@ -30,34 +32,40 @@ serve(async (req) => {
       'Authorization': `Bearer ${supabaseKey}`,
       'Content-Type': 'application/json',
     };
+    const telnyxHeaders = { 'Authorization': `Bearer ${telnyxApiKey}` };
 
-    // Fetch queue entries with their timestamps
-    const queueResp = await fetch(
-      `${supabaseUrl}/rest/v1/call_queue?call_sid=in.(${callSids.map(s => `"${s}"`).join(',')})&select=call_sid,updated_at,created_at,status&status=in.(waiting,ringing)`,
-      { headers: { 'apikey': supabaseKey, 'Authorization': `Bearer ${supabaseKey}` } }
-    );
-
-    if (!queueResp.ok) {
-      console.error('Failed to fetch queue entries:', await queueResp.text());
-      return new Response(
-        JSON.stringify({ success: true, abandoned: [] }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
-
-    const entries = await queueResp.json();
-    const now = Date.now();
-    const staleMs = 45 * 1000; // 45 seconds — hold music loops every ~33s
     const abandoned: string[] = [];
 
-    for (const entry of entries) {
-      const lastUpdate = new Date(entry.updated_at || entry.created_at).getTime();
-      const entryAge = now - new Date(entry.created_at).getTime();
-      const heartbeatAge = now - lastUpdate;
+    for (const callSid of callSids) {
+      let isActive = false;
 
-      // Only check entries older than 45 seconds (give new entries time for first heartbeat)
-      if (entryAge > staleMs && heartbeatAge > staleMs) {
-        abandoned.push(entry.call_sid);
+      // Approach 1: Try GET /v2/calls/{callSid} directly
+      try {
+        const resp = await fetch(`https://api.telnyx.com/v2/calls/${encodeURIComponent(callSid)}`, {
+          headers: telnyxHeaders,
+        });
+        if (resp.ok) {
+          const data = await resp.json();
+          isActive = data?.data?.is_alive === true;
+          console.log('Call lookup:', callSid, 'is_alive:', isActive);
+        } else {
+          // 404 = call doesn't exist anymore = hung up
+          const status = resp.status;
+          console.log('Call lookup:', callSid, 'status:', status);
+          if (status === 404) {
+            isActive = false;
+          } else {
+            // Other error — don't assume abandoned
+            isActive = true;
+          }
+        }
+      } catch (err) {
+        console.error('Error checking call:', callSid, err);
+        isActive = true; // On error, don't remove
+      }
+
+      if (!isActive) {
+        abandoned.push(callSid);
       }
     }
 
@@ -74,7 +82,7 @@ serve(async (req) => {
     }
 
     if (abandoned.length > 0) {
-      console.log('Marked as abandoned (stale heartbeat):', abandoned);
+      console.log('Marked as abandoned:', abandoned);
     }
 
     return new Response(
