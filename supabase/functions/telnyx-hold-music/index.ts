@@ -1,11 +1,12 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 
-// TeXML endpoint that plays hold music for callers waiting in department queue.
-// Used as Conference waitUrl — Telnyx calls this to get music to play.
-// Also updates heartbeat and checks if an agent has picked up.
+// TeXML endpoint that plays hold music and checks if agent has picked up.
+// Uses Gather with short timeout to loop every ~3-5 seconds.
+// Each loop updates the heartbeat (updated_at) so the frontend can detect caller hangup.
 serve(async (req) => {
   const url = new URL(req.url);
   const callSid = url.searchParams.get('callSid') || '';
+  const iteration = parseInt(url.searchParams.get('iteration') || '0');
   const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
   const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 
@@ -16,10 +17,10 @@ serve(async (req) => {
   };
 
   try {
-    console.log('Hold music requested for call:', callSid);
+    console.log('Hold music requested for call:', callSid, 'iteration:', iteration);
 
     if (callSid) {
-      // Update heartbeat so frontend knows caller is still on the line
+      // Update heartbeat — frontend uses this to detect when caller hangs up
       await fetch(
         `${supabaseUrl}/rest/v1/call_queue?call_sid=eq.${encodeURIComponent(callSid)}&status=in.(waiting,ringing)`,
         {
@@ -46,7 +47,7 @@ serve(async (req) => {
         const queueData = Array.isArray(queueArr) && queueArr.length > 0 ? queueArr[0] : null;
         console.log('Queue status check:', { status: queueData?.status, picked_up_by: queueData?.picked_up_by });
 
-        // If caller hung up or call completed, stop
+        // If caller hung up or call completed, stop the hold music loop
         if (queueData?.status === 'abandoned' || queueData?.status === 'completed') {
           console.log('Call queue status is terminal:', queueData.status);
           return new Response(
@@ -55,7 +56,6 @@ serve(async (req) => {
           );
         }
 
-        // If agent picked up, transfer the call
         if (queueData?.status === 'picked_up' && queueData?.picked_up_by) {
           console.log('Agent picked up! Getting SIP details for user:', queueData.picked_up_by);
 
@@ -111,22 +111,38 @@ serve(async (req) => {
       }
     }
 
-    // Play hold music — Conference waitUrl loops this automatically
-    return new Response(
-      `<?xml version="1.0" encoding="UTF-8"?>
+    // Not picked up yet — play short music segment then loop back to check again
+    const nextIteration = iteration + 1;
+    const checkUrl = `${supabaseUrl}/functions/v1/telnyx-hold-music?callSid=${encodeURIComponent(callSid)}&iteration=${nextIteration}`;
+    const actionUrl = checkUrl.replace(/&/g, '&amp;');
+
+    // Every 10th iteration, say patience message
+    const sayMessage = nextIteration % 10 === 0
+      ? `<Say voice="Polly.Amy-Neural">Thank you for your patience. An agent will be with you shortly.</Say>`
+      : '';
+
+    // Gather with 3-second timeout loops quickly for fast heartbeat + pickup detection
+    const texml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Play>https://s3.amazonaws.com/com.twilio.sounds.music/ClockworkWaltz.mp3</Play>
-  <Say voice="Polly.Amy-Neural">Thank you for your patience. An agent will be with you shortly.</Say>
-  <Play>https://s3.amazonaws.com/com.twilio.sounds.music/ClockworkWaltz.mp3</Play>
-</Response>`,
-      { headers: { 'Content-Type': 'application/xml' } }
-    );
+  ${sayMessage}
+  <Gather input="dtmf" timeout="3" action="${actionUrl}" numDigits="1">
+    <Play>https://s3.amazonaws.com/com.twilio.sounds.music/ClockworkWaltz.mp3</Play>
+  </Gather>
+  <Redirect>${actionUrl}</Redirect>
+</Response>`;
+
+    return new Response(texml, {
+      headers: { 'Content-Type': 'application/xml' },
+    });
   } catch (error) {
     console.error('Hold music error:', error);
+    const fallbackUrl = `${supabaseUrl}/functions/v1/telnyx-hold-music?callSid=${encodeURIComponent(callSid)}&iteration=${iteration}`;
     return new Response(
       `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Play>https://s3.amazonaws.com/com.twilio.sounds.music/ClockworkWaltz.mp3</Play>
+  <Say voice="Polly.Amy-Neural">Please continue to hold.</Say>
+  <Pause length="3"/>
+  <Redirect>${fallbackUrl.replace(/&/g, '&amp;')}</Redirect>
 </Response>`,
       { headers: { 'Content-Type': 'application/xml' } }
     );

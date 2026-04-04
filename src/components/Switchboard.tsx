@@ -218,7 +218,33 @@ export const Switchboard = ({ userId, onPickupCall }: SwitchboardProps) => {
         .order('created_at', { ascending: true });
 
       if (error) throw error;
-      setQueuedCalls(data || []);
+
+      // Detect stale queue entries where hold music loop has stopped (caller hung up).
+      // Hold music updates updated_at every ~3-5 seconds via Gather loop.
+      // If updated_at hasn't been refreshed in 12 seconds, caller is gone.
+      // Skip entries younger than 12 seconds (they haven't had time for a heartbeat yet).
+      const now = Date.now();
+      const staleMs = 12 * 1000;
+      const fresh: typeof data = [];
+
+      for (const entry of (data || [])) {
+        const lastUpdate = new Date(entry.updated_at || entry.created_at).getTime();
+        const entryAge = now - new Date(entry.created_at).getTime();
+        const heartbeatAge = now - lastUpdate;
+
+        if (entryAge > staleMs && heartbeatAge > staleMs) {
+          supabase
+            .from('call_queue')
+            .update({ status: 'abandoned' })
+            .eq('id', entry.id)
+            .in('status', ['waiting', 'ringing'])
+            .then(() => console.log('Removed stale queue entry:', entry.from_number));
+        } else {
+          fresh.push(entry);
+        }
+      }
+
+      setQueuedCalls(fresh);
     } catch (error) {
       console.error('Error fetching queued calls:', error);
     }

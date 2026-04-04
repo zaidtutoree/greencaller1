@@ -384,22 +384,16 @@ async function handleTeXMLIncoming(formData: Record<string, string>) {
       status: 'waiting',
     });
 
-    // Use Conference with statusCallback for immediate hangup detection
-    // When the caller hangs up, the Dial ends and statusCallback fires instantly
-    const statusCallbackUrl = `${supabaseUrl}/functions/v1/telnyx-call-events`;
+    // Hold music URL with Redirect loop — checks for agent pickup every ~3 seconds
     const holdMusicUrl = `${supabaseUrl}/functions/v1/telnyx-hold-music?callSid=${encodeURIComponent(callSid)}`;
-    const conferenceName = `dept-${deptData.id}-${callSid}`;
 
-    console.log('Placing caller in conference queue, call_sid:', callSid, 'conference:', conferenceName);
+    console.log('Playing hold music for caller, call_sid:', callSid);
 
     return new Response(
       `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say voice="${voiceName}">Thank you for calling ${escapedDeptName}. Please hold while we connect you with an available representative.</Say>
-  <Dial statusCallback="${statusCallbackUrl}" statusCallbackEvent="completed" statusCallbackMethod="POST">
-    <Conference waitUrl="${holdMusicUrl.replace(/&/g, '&amp;')}" waitUrlMethod="POST" beep="false" startConferenceOnEnter="true" endConferenceOnExit="true">${conferenceName}</Conference>
-  </Dial>
-  <Hangup/>
+  <Redirect>${holdMusicUrl}</Redirect>
 </Response>`,
       { headers: { 'Content-Type': 'application/xml' } }
     );
