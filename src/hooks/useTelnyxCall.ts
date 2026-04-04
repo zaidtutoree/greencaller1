@@ -1294,42 +1294,8 @@ export const useTelnyxCall = ({ userId, assignedNumber, enabled = true }: UseTel
     }
 
     try {
-      // Pre-acquire microphone permission before calling answer().
-      // The Telnyx SDK internally calls getUserMedia inside answer() → peer.init().
-      // If getUserMedia fails (no mic / permission denied), the SDK continues with
-      // a null local stream which corrupts the RTCPeerConnection, leading to:
-      //   "Cannot read properties of null (reading 'getTransceivers')"
-      // By acquiring the stream first we surface a clear error and also warm the
-      // browser permission prompt so the SDK's own getUserMedia succeeds instantly.
-      if (navigator.mediaDevices?.getUserMedia) {
-        try {
-          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-          // Release the stream immediately – we only needed the permission grant.
-          stream.getTracks().forEach((t) => t.stop());
-        } catch (micError: any) {
-          console.error("Microphone access denied:", micError);
-
-          // Check permission state to give a specific message
-          let description = "Please allow microphone access to answer calls.";
-          try {
-            const permStatus = await navigator.permissions.query({ name: "microphone" as PermissionName });
-            if (permStatus.state === "denied") {
-              description = "Microphone is blocked. Click the lock/site-settings icon in your address bar and allow microphone access, then refresh.";
-            }
-          } catch {
-            // Permissions API not supported, use generic message
-          }
-
-          toast({
-            title: "Microphone required",
-            description,
-            variant: "destructive",
-          });
-          incomingCallRef.current = null;
-          setIncomingCall({ isIncoming: false, isDismissed: false, phoneNumber: "", call: null });
-          return;
-        }
-      }
+      // Microphone permission is pre-acquired when the Telnyx client connects (telnyx.ready handler).
+      // No need to call getUserMedia again here — it adds delay to answering.
 
       console.log("Answering incoming call:", {
         callId: incomingCall.call.id,
@@ -1339,11 +1305,9 @@ export const useTelnyxCall = ({ userId, assignedNumber, enabled = true }: UseTel
         hasRemoteSdp: !!incomingCall.call.options?.remoteSdp,
         sessionConnected: !!incomingCall.call.session?.connected,
       });
-      await incomingCall.call.answer();
+      // Update UI immediately so active call modal shows instantly
       activeCallRef.current = incomingCall.call;
-      incomingCallRef.current = null; // Clear the ref since call is now active
-
-      // Extract the PSTN call ID for recording/status updates
+      incomingCallRef.current = null;
       const pstnId = extractPstnCallControlId(incomingCall.call);
 
       setCallState((prev) => ({
@@ -1355,6 +1319,9 @@ export const useTelnyxCall = ({ userId, assignedNumber, enabled = true }: UseTel
       }));
 
       setIncomingCall({ isIncoming: false, isDismissed: false, phoneNumber: "", call: null });
+
+      // Answer the call after UI is updated
+      await incomingCall.call.answer();
 
       // Update call_history to 'answered' status via backend (bypasses RLS)
       try {
