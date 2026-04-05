@@ -575,8 +575,10 @@ export const useTelnyxCall = ({ userId, assignedNumber, enabled = true }: UseTel
                   const savedCallId = callStateRef?.current?.callId || call.id;
 
                   // Update call history with final status and duration
+                  // Use pstnCallControlId (v3: ID) if available, and pass direction
+                  const resolvedCallId = callStateRef?.current?.pstnCallControlId || savedCallId;
                   supabase.functions.invoke('update-call-status', {
-                    body: { callId: savedCallId, status: 'completed', duration: finalDuration },
+                    body: { callId: resolvedCallId, status: 'completed', duration: finalDuration, direction: 'outbound' },
                   }).catch((e: any) => console.warn("Failed to update call status on hangup:", e));
 
                   resetCallState();
@@ -1060,7 +1062,7 @@ export const useTelnyxCall = ({ userId, assignedNumber, enabled = true }: UseTel
 
     try {
       const { data, error } = await supabase.functions.invoke('update-call-status', {
-        body: { callId, status: 'completed', duration: finalDuration }
+        body: { callId, status: 'completed', duration: finalDuration, direction: callState.phoneNumber ? undefined : 'outbound' }
       });
       if (error) {
         console.error("Failed to update call status:", error);

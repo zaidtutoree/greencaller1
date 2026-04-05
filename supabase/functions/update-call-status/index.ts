@@ -94,11 +94,14 @@ serve(async (req) => {
     }
 
     // Fallback: find recent call by direction and update it
+    // Only match calls with active statuses (initiated, ringing, in-progress)
+    // Never match missed, no-answer, busy, failed, or declined calls
     const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
-    const searchDir = direction || 'inbound';
+    const searchDir = direction || 'outbound';
+    const activeStatuses = 'status=in.(initiated,ringing,in-progress)';
 
-    // Find recent call that's not completed
-    const searchUrl = `${supabaseUrl}/rest/v1/call_history?direction=eq.${searchDir}&status=neq.completed&created_at=gte.${encodeURIComponent(fiveMinutesAgo)}&order=created_at.desc&limit=1`;
+    // Find recent call that's still active
+    const searchUrl = `${supabaseUrl}/rest/v1/call_history?direction=eq.${searchDir}&${activeStatuses}&created_at=gte.${encodeURIComponent(fiveMinutesAgo)}&order=created_at.desc&limit=1`;
 
     const searchRes = await fetch(searchUrl, { headers });
 
