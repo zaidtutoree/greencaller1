@@ -110,38 +110,55 @@ serve(async (req) => {
     let callControlId = callId;
     let originalCallId = callId;
 
-    // If this is a TeXML CallSid (UUID), look up the Call Control ID via TeXML API
+    // If this is a UUID (WebRTC SDK call or TeXML CallSid), look up the Call Control ID
     if (isTexmlCallSid && !isCallControlId) {
-      console.log('Looking up Call Control ID for TeXML call:', callId);
+      console.log('Looking up Call Control ID for UUID:', callId);
 
-      // Get the TeXML call details to find the call_control_id
-      const callInfoResponse = await fetch(`https://api.telnyx.com/v2/texml_calls/${callId}`, {
-        method: 'GET',
-        headers: {
-          'Authorization': `Bearer ${telnyxApiKey}`,
-          'Content-Type': 'application/json',
-        },
-      });
-
-      if (callInfoResponse.ok) {
-        const callInfo = await callInfoResponse.json();
-        console.log('TeXML call info:', callInfo);
-
-        // Extract call_control_id from the response
-        if (callInfo.data?.call_control_id) {
-          callControlId = callInfo.data.call_control_id;
-          console.log('Found Call Control ID:', callControlId);
-
-          // Update call_sid in call_history to use call_control_id
-          // This makes recording webhook lookup work exactly like outbound calls
-          await updateCallSidToControlId(callId, callControlId);
+      // Try 1: Call Control API - the UUID might be a call_leg_id
+      let found = false;
+      try {
+        const resp = await fetch(`https://api.telnyx.com/v2/calls/${callId}`, {
+          headers: { 'Authorization': `Bearer ${telnyxApiKey}` },
+        });
+        if (resp.ok) {
+          const data = await resp.json();
+          if (data.data?.call_control_id) {
+            callControlId = data.data.call_control_id;
+            console.log('Found Call Control ID via calls API:', callControlId);
+            await updateCallSidToControlId(callId, callControlId);
+            found = true;
+          }
         } else {
-          console.log('No call_control_id in response, using original callId');
+          console.log('Calls API lookup returned:', resp.status);
         }
-      } else {
-        const errorText = await callInfoResponse.text();
-        console.error('Failed to get TeXML call info:', errorText);
-        // Continue with original callId as fallback
+      } catch (e) {
+        console.log('Calls API lookup failed:', e);
+      }
+
+      // Try 2: TeXML API
+      if (!found) {
+        try {
+          const resp = await fetch(`https://api.telnyx.com/v2/texml_calls/${callId}`, {
+            headers: { 'Authorization': `Bearer ${telnyxApiKey}` },
+          });
+          if (resp.ok) {
+            const data = await resp.json();
+            if (data.data?.call_control_id) {
+              callControlId = data.data.call_control_id;
+              console.log('Found Call Control ID via TeXML API:', callControlId);
+              await updateCallSidToControlId(callId, callControlId);
+              found = true;
+            }
+          } else {
+            console.log('TeXML API lookup returned:', resp.status);
+          }
+        } catch (e) {
+          console.log('TeXML API lookup failed:', e);
+        }
+      }
+
+      if (!found) {
+        console.log('Could not resolve Call Control ID, using original:', callId);
       }
     } else if (isCallControlId) {
       // For v3: format IDs (newer TeXML or inbound calls), we need to look up the call
