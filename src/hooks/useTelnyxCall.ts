@@ -532,31 +532,37 @@ export const useTelnyxCall = ({ userId, assignedNumber, enabled = true }: UseTel
                   pstnCallControlId: ccId || prev.pstnCallControlId,
                 }));
 
-                // The call.initiated webhook maps the WebRTC UUID (call.id) to the
-                // real Call Control ID in call_history. Fetch it after a short delay
-                // so it's available for recording.
+                // The call.initiated webhook maps the WebRTC UUID to the real
+                // PSTN Call Control ID in call_history. Poll for it so recording works.
                 if (!ccId) {
-                  setTimeout(async () => {
+                  const pollForCallControlId = async (attempts = 0) => {
+                    if (attempts > 5) return; // Give up after ~10 seconds
                     try {
-                      const { data: historyEntry } = await supabase
+                      // Look for a recent outbound call with a v3: call_sid (the PSTN leg)
+                      const { data: rows } = await supabase
                         .from('call_history')
                         .select('call_sid')
-                        .or(`call_sid.eq.${call.id}`)
+                        .eq('direction', 'outbound')
+                        .gt('created_at', new Date(Date.now() - 60000).toISOString())
+                        .like('call_sid', 'v3:%')
                         .order('created_at', { ascending: false })
-                        .limit(1)
-                        .single();
+                        .limit(1);
 
-                      if (historyEntry?.call_sid && historyEntry.call_sid !== call.id) {
-                        console.log("Resolved Call Control ID from DB:", historyEntry.call_sid);
+                      if (rows && rows.length > 0 && rows[0].call_sid) {
+                        console.log("Resolved PSTN Call Control ID from DB:", rows[0].call_sid);
                         setCallState((prev) => ({
                           ...prev,
-                          pstnCallControlId: historyEntry.call_sid,
+                          pstnCallControlId: rows[0].call_sid,
                         }));
+                        return;
                       }
                     } catch (e) {
-                      console.warn("Could not resolve Call Control ID from DB:", e);
+                      console.warn("Poll for Call Control ID failed:", e);
                     }
-                  }, 2000);
+                    // Retry after 2 seconds
+                    setTimeout(() => pollForCallControlId(attempts + 1), 2000);
+                  };
+                  setTimeout(() => pollForCallControlId(0), 2000);
                 }
               }
 
