@@ -187,15 +187,49 @@ serve(async (req) => {
 
     switch (eventType) {
       case 'call.initiated': {
-        // Update status to ringing — try matching by call_control_id first
-        const { errorText: err1 } = await supabaseUpdate('call_history', { status: 'ringing' }, { call_sid: callControlId });
-
-        // If no match, try by call_leg_id (WebRTC SDK calls store this UUID as call_sid)
-        // Also update call_sid to the real Call Control ID so recording works
         const callLegId = payload?.call_leg_id;
-        if (callLegId && callLegId !== callControlId) {
-          console.log('Trying to map call_leg_id to call_control_id:', callLegId, '->', callControlId);
-          await supabaseUpdate('call_history', { status: 'ringing', call_sid: callControlId }, { call_sid: callLegId });
+        const callTo = payload?.to;
+        const callFrom = payload?.from;
+        const callDirection = payload?.direction;
+
+        console.log('Call initiated details:', { callControlId, callLegId, to: callTo, from: callFrom, direction: callDirection });
+
+        // For WebRTC SDK outbound calls, Telnyx creates two legs:
+        // 1. WebRTC→Telnyx leg (to = SIP URI, ends after setup)
+        // 2. Telnyx→PSTN leg (to = phone number like +44..., stays active)
+        // We need the PSTN leg's call_control_id for recording.
+        // Detect PSTN leg: "to" starts with + (phone number), not sip:
+        const isPstnLeg = callTo && callTo.startsWith('+');
+
+        if (isPstnLeg && callLegId) {
+          // This is the PSTN leg — map the WebRTC UUID to this call_control_id
+          console.log('PSTN leg detected, mapping call_leg_id to call_control_id:', callLegId, '->', callControlId);
+          // Try to find and update the call_history entry created with the WebRTC UUID
+          // The WebRTC UUID might be in a different call_leg_id, so search by from/to numbers
+          const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+          const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+
+          // Find recent outbound call matching the numbers
+          const searchUrl = `${supabaseUrl}/rest/v1/call_history?direction=eq.outbound&to_number=eq.${encodeURIComponent(callTo)}&created_at=gte.${encodeURIComponent(fiveMinAgo)}&order=created_at.desc&limit=1&select=id,call_sid`;
+          const searchRes = await fetch(searchUrl, { headers: supabaseHeaders() });
+
+          if (searchRes.ok) {
+            const rows = await searchRes.json();
+            if (Array.isArray(rows) && rows.length > 0) {
+              const existingCallSid = rows[0].call_sid;
+              const existingId = rows[0].id;
+              // Update the call_sid to the PSTN Call Control ID
+              console.log('Updating call_history', existingId, 'call_sid from', existingCallSid, 'to', callControlId);
+              await supabaseUpdate('call_history', { status: 'ringing', call_sid: callControlId }, { id: existingId });
+            }
+          }
+        } else {
+          // Non-PSTN leg or simple call — just update status
+          await supabaseUpdate('call_history', { status: 'ringing' }, { call_sid: callControlId });
+
+          if (callLegId && callLegId !== callControlId) {
+            await supabaseUpdate('call_history', { status: 'ringing', call_sid: callControlId }, { call_sid: callLegId });
+          }
         }
         break;
       }
