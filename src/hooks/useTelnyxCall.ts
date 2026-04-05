@@ -1127,33 +1127,42 @@ export const useTelnyxCall = ({ userId, assignedNumber, enabled = true }: UseTel
   const toggleRecording = useCallback(async () => {
     if (!callState.isActive) return;
 
-    // For recording, we need the PSTN leg's call ID
-    // This can be either:
-    // - Call Control ID (v2:/v3: prefix) for outbound calls
-    // - TeXML CallSid (UUID) for inbound calls
-    const recordingCallId = callState.pstnCallControlId || callState.callId;
+    // For recording, we need a valid Call Control ID or TeXML CallSid
+    // Try multiple sources: pstnCallControlId, SDK call object properties, callId
+    let recordingCallId = callState.pstnCallControlId;
+
+    // If no Call Control ID stored, try to get it from the active call object
+    if (!recordingCallId || (!recordingCallId.startsWith('v2:') && !recordingCallId.startsWith('v3:'))) {
+      const activeCall = activeCallRef.current;
+      if (activeCall) {
+        recordingCallId = activeCall.call_control_id
+          || activeCall.callControlId
+          || activeCall.options?.call_control_id
+          || activeCall.options?.callControlId
+          || activeCall.telnyxCallControlId
+          || activeCall.telnyxLegId
+          || recordingCallId;
+      }
+    }
+
+    // Final fallback to callId
+    if (!recordingCallId) {
+      recordingCallId = callState.callId;
+    }
+
     if (!recordingCallId) {
       toast({
         title: "Cannot record",
-        description: "No PSTN call leg available for recording",
+        description: "No call ID available for recording",
         variant: "destructive",
       });
       return;
     }
 
-    // Check if we have a valid call ID format
     const isCallControlId = recordingCallId.startsWith('v2:') || recordingCallId.startsWith('v3:');
     const isValidUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(recordingCallId);
 
-    if (!isCallControlId && !isValidUUID) {
-      toast({
-        title: "Recording not available",
-        description: "Call ID format not recognized for recording",
-      });
-      return;
-    }
-
-    console.log('Starting recording with call ID:', recordingCallId, 'type:', isCallControlId ? 'call_control' : 'texml');
+    console.log('Recording call ID:', recordingCallId, 'type:', isCallControlId ? 'call_control' : isValidUUID ? 'uuid' : 'unknown');
 
     try {
       if (!callState.isRecording) {
