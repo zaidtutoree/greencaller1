@@ -157,6 +157,33 @@ serve(async (req) => {
         }
       }
 
+      // Try 3: Look up the PSTN leg's Call Control ID from call_history
+      // The call.initiated webhook stores the v3: ID mapped from the WebRTC UUID
+      if (!found) {
+        try {
+          const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+          const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+          // Find most recent outbound call with a v3: call_sid (the PSTN leg)
+          const searchUrl = `${supabaseUrl}/rest/v1/call_history?direction=eq.outbound&created_at=gte.${encodeURIComponent(fiveMinAgo)}&call_sid=like.v3%3A*&order=created_at.desc&limit=1&select=call_sid`;
+          const searchRes = await fetch(searchUrl, {
+            headers: {
+              'apikey': Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
+              'Authorization': `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!}`,
+            },
+          });
+          if (searchRes.ok) {
+            const rows = await searchRes.json();
+            if (Array.isArray(rows) && rows.length > 0 && rows[0].call_sid) {
+              callControlId = rows[0].call_sid;
+              console.log('Found PSTN Call Control ID from call_history:', callControlId);
+              found = true;
+            }
+          }
+        } catch (e) {
+          console.log('DB lookup for PSTN Call Control ID failed:', e);
+        }
+      }
+
       if (!found) {
         console.log('Could not resolve Call Control ID, using original:', callId);
       }
