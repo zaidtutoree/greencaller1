@@ -508,14 +508,28 @@ export const useTelnyxCall = ({ userId, assignedNumber, enabled = true }: UseTel
 
               if (callState === "active") {
                 console.log("Outbound SDK call connected:", call.id);
+                console.log("Outbound SDK call details:", {
+                  id: call.id,
+                  callControlId: call.call_control_id || call.callControlId,
+                  telnyxCallControlId: call.telnyxCallControlId,
+                  telnyxSessionId: call.telnyxSessionId,
+                  options: call.options,
+                });
                 activeCallRef.current = call;
                 makingOutboundRef.current = false;
                 attachRemoteStream(call);
                 startDurationTimer();
+
+                // Extract the Call Control ID for recording/API operations
+                const ccId = call.call_control_id || call.callControlId
+                  || call.options?.call_control_id || call.options?.callControlId
+                  || call.telnyxCallControlId;
+
                 setCallState((prev) => ({
                   ...prev,
                   isActive: true,
                   callId: call.id,
+                  pstnCallControlId: ccId || prev.pstnCallControlId,
                 }));
               }
 
