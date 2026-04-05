@@ -316,32 +316,51 @@ serve(async (req) => {
           totalOverageMins += Math.max(0, outboundMins - outboundLimit) + Math.max(0, inboundMins - inboundLimit);
         }
 
-        // Report usage to Stripe via billing meter events
-        if (totalOverageMins > 0) {
-          // Get the lead user's stripe_customer_id
-          const leadProfiles = await supabaseRest(
-            `profiles?id=eq.${encodeURIComponent(sub.lead_user_id)}&select=stripe_customer_id`
-          );
-          const stripeCustomerId = Array.isArray(leadProfiles) && leadProfiles[0]?.stripe_customer_id;
+        // Report usage to Stripe via subscription item usage records
+        // This is the correct way to report metered usage for overage billing
+        if (totalOverageMins > 0 && sub.stripe_subscription_item_id) {
+          const params = new URLSearchParams();
+          params.append("quantity", String(totalOverageMins));
+          params.append("action", "set"); // "set" replaces previous value (not "increment")
+          params.append("timestamp", String(Math.floor(Date.now() / 1000)));
 
-          if (stripeCustomerId) {
-            const params = new URLSearchParams();
-            params.append("event_name", "greencaller_overage_minutes");
-            params.append("payload[value]", String(totalOverageMins));
-            params.append("payload[stripe_customer_id]", stripeCustomerId);
-            params.append("timestamp", String(Math.floor(Date.now() / 1000)));
-
-            await fetch("https://api.stripe.com/v1/billing/meter_events", {
+          const usageResp = await fetch(
+            `https://api.stripe.com/v1/subscription_items/${encodeURIComponent(sub.stripe_subscription_item_id)}/usage_records`,
+            {
               method: "POST",
               headers: {
                 "Authorization": `Bearer ${STRIPE_SECRET_KEY}`,
                 "Content-Type": "application/x-www-form-urlencoded",
               },
               body: params.toString(),
-            });
-          }
+            }
+          );
 
-          console.log("Reported overage usage:", { subId: sub.id, totalOverageMins });
+          if (usageResp.ok) {
+            console.log("Reported overage usage to Stripe:", { subId: sub.id, totalOverageMins, subscriptionItemId: sub.stripe_subscription_item_id });
+          } else {
+            const errText = await usageResp.text();
+            console.error("Failed to report usage to Stripe:", errText);
+          }
+        } else if (totalOverageMins === 0 && sub.stripe_subscription_item_id) {
+          // Report zero usage so previous overages don't carry over
+          const params = new URLSearchParams();
+          params.append("quantity", "0");
+          params.append("action", "set");
+          params.append("timestamp", String(Math.floor(Date.now() / 1000)));
+
+          await fetch(
+            `https://api.stripe.com/v1/subscription_items/${encodeURIComponent(sub.stripe_subscription_item_id)}/usage_records`,
+            {
+              method: "POST",
+              headers: {
+                "Authorization": `Bearer ${STRIPE_SECRET_KEY}`,
+                "Content-Type": "application/x-www-form-urlencoded",
+              },
+              body: params.toString(),
+            }
+          );
+          console.log("Reported zero overage usage for:", sub.id);
         }
 
         break;
