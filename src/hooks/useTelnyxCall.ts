@@ -531,6 +531,33 @@ export const useTelnyxCall = ({ userId, assignedNumber, enabled = true }: UseTel
                   callId: call.id,
                   pstnCallControlId: ccId || prev.pstnCallControlId,
                 }));
+
+                // The call.initiated webhook maps the WebRTC UUID (call.id) to the
+                // real Call Control ID in call_history. Fetch it after a short delay
+                // so it's available for recording.
+                if (!ccId) {
+                  setTimeout(async () => {
+                    try {
+                      const { data: historyEntry } = await supabase
+                        .from('call_history')
+                        .select('call_sid')
+                        .or(`call_sid.eq.${call.id}`)
+                        .order('created_at', { ascending: false })
+                        .limit(1)
+                        .single();
+
+                      if (historyEntry?.call_sid && historyEntry.call_sid !== call.id) {
+                        console.log("Resolved Call Control ID from DB:", historyEntry.call_sid);
+                        setCallState((prev) => ({
+                          ...prev,
+                          pstnCallControlId: historyEntry.call_sid,
+                        }));
+                      }
+                    } catch (e) {
+                      console.warn("Could not resolve Call Control ID from DB:", e);
+                    }
+                  }, 2000);
+                }
               }
 
               if (callState === "hangup" || callState === "destroy") {

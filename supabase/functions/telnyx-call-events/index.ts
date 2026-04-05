@@ -187,8 +187,16 @@ serve(async (req) => {
 
     switch (eventType) {
       case 'call.initiated': {
-        // Update status to ringing
-        await supabaseUpdate('call_history', { status: 'ringing' }, { call_sid: callControlId });
+        // Update status to ringing — try matching by call_control_id first
+        const { errorText: err1 } = await supabaseUpdate('call_history', { status: 'ringing' }, { call_sid: callControlId });
+
+        // If no match, try by call_leg_id (WebRTC SDK calls store this UUID as call_sid)
+        // Also update call_sid to the real Call Control ID so recording works
+        const callLegId = payload?.call_leg_id;
+        if (callLegId && callLegId !== callControlId) {
+          console.log('Trying to map call_leg_id to call_control_id:', callLegId, '->', callControlId);
+          await supabaseUpdate('call_history', { status: 'ringing', call_sid: callControlId }, { call_sid: callLegId });
+        }
         break;
       }
 
