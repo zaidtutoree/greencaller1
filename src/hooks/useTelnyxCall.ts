@@ -523,6 +523,15 @@ export const useTelnyxCall = ({ userId, assignedNumber, enabled = true }: UseTel
                 console.log("Outbound SDK call ended:", call.id);
                 outboundCallIdsRef.current.delete(call.id);
                 if (activeCallRef.current?.id === call.id) {
+                  // Save duration and call ID before resetting state
+                  const finalDuration = callStateRef?.current?.duration || 0;
+                  const savedCallId = callStateRef?.current?.callId || call.id;
+
+                  // Update call history with final status and duration
+                  supabase.functions.invoke('update-call-status', {
+                    body: { callId: savedCallId, status: 'completed', duration: finalDuration },
+                  }).catch((e: any) => console.warn("Failed to update call status on hangup:", e));
+
                   resetCallState();
                 }
               }
