@@ -36,23 +36,43 @@ serve(async (req) => {
 
     let callControlId = callId;
 
-    // If this is a TeXML CallSid, look up the Call Control ID
+    // If this is a UUID (WebRTC SDK or TeXML), resolve to Call Control ID
     if (isTexmlCallSid && !isCallControlId) {
-      console.log('Looking up Call Control ID for TeXML call:', callId);
+      console.log('Resolving Call Control ID for UUID:', callId);
 
-      const callInfoResponse = await fetch(`https://api.telnyx.com/v2/texml_calls/${callId}`, {
-        method: 'GET',
-        headers: {
-          'Authorization': `Bearer ${telnyxApiKey}`,
-          'Content-Type': 'application/json',
-        },
-      });
+      // Try TeXML API
+      try {
+        const resp = await fetch(`https://api.telnyx.com/v2/texml_calls/${callId}`, {
+          headers: { 'Authorization': `Bearer ${telnyxApiKey}` },
+        });
+        if (resp.ok) {
+          const data = await resp.json();
+          if (data.data?.call_control_id) {
+            callControlId = data.data.call_control_id;
+            console.log('Found Call Control ID via TeXML API:', callControlId);
+          }
+        }
+      } catch {}
 
-      if (callInfoResponse.ok) {
-        const callInfo = await callInfoResponse.json();
-        if (callInfo.data?.call_control_id) {
-          callControlId = callInfo.data.call_control_id;
-          console.log('Found Call Control ID:', callControlId);
+      // Fallback: look up PSTN leg from call_history
+      if (callControlId === callId) {
+        try {
+          const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+          const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+          const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+          const searchUrl = `${supabaseUrl}/rest/v1/call_history?direction=eq.outbound&created_at=gte.${encodeURIComponent(fiveMinAgo)}&call_sid=like.v3%3A*&order=created_at.desc&limit=1&select=call_sid`;
+          const searchRes = await fetch(searchUrl, {
+            headers: { 'apikey': supabaseKey, 'Authorization': `Bearer ${supabaseKey}` },
+          });
+          if (searchRes.ok) {
+            const rows = await searchRes.json();
+            if (Array.isArray(rows) && rows.length > 0 && rows[0].call_sid) {
+              callControlId = rows[0].call_sid;
+              console.log('Found PSTN Call Control ID from DB:', callControlId);
+            }
+          }
+        } catch (e) {
+          console.log('DB lookup failed:', e);
         }
       }
     }
