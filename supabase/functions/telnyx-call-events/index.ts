@@ -35,6 +35,11 @@ async function supabaseUpdate(table: string, patch: any, filters: Record<string,
   let url = `${supabaseUrl}/rest/v1/${table}?`;
   for (const [k, v] of Object.entries(filters)) url += `${k}=eq.${encodeURIComponent(v)}&`;
 
+  // When updating call_history status, never overwrite terminal statuses
+  if (table === 'call_history' && patch.status) {
+    url += 'status=not.in.(missed,no-answer,busy,failed,declined,voicemail-requested)&';
+  }
+
   const res = await fetch(url, {
     method: 'PATCH',
     headers: {

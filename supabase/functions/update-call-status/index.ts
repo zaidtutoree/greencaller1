@@ -70,25 +70,48 @@ serve(async (req) => {
     if (status) updateData.status = status;
     if (duration !== undefined) updateData.duration = duration;
 
-    // First try to update by call_sid
+    // Terminal statuses that must NEVER be overwritten
+    const terminalStatuses = ['missed', 'no-answer', 'busy', 'failed', 'declined', 'voicemail-requested'];
+
+    // First try to update by call_sid — but never overwrite terminal statuses
     if (callId) {
-      const response = await fetch(
-        `${supabaseUrl}/rest/v1/call_history?call_sid=eq.${encodeURIComponent(callId)}`,
-        {
-          method: 'PATCH',
-          headers: { ...headers, 'Prefer': 'return=representation' },
-          body: JSON.stringify(updateData),
-        }
+      // Check current status first
+      const checkRes = await fetch(
+        `${supabaseUrl}/rest/v1/call_history?call_sid=eq.${encodeURIComponent(callId)}&select=id,status`,
+        { headers }
       );
 
-      if (response.ok) {
-        const updated = await response.json();
-        if (updated && updated.length > 0) {
-          console.log('Updated call_history by call_sid:', updated[0].id);
-          return new Response(
-            JSON.stringify({ success: true, updated: updated[0] }),
-            { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      if (checkRes.ok) {
+        const rows = await checkRes.json();
+        if (rows && rows.length > 0) {
+          if (terminalStatuses.includes(rows[0].status)) {
+            console.log('Skipping update — call has terminal status:', rows[0].status, 'id:', rows[0].id);
+            return new Response(
+              JSON.stringify({ success: false, message: 'Call has terminal status, not updating' }),
+              { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+            );
+          }
+
+          // Safe to update
+          const updateRes = await fetch(
+            `${supabaseUrl}/rest/v1/call_history?call_sid=eq.${encodeURIComponent(callId)}`,
+            {
+              method: 'PATCH',
+              headers: { ...headers, 'Prefer': 'return=representation' },
+              body: JSON.stringify(updateData),
+            }
           );
+
+          if (updateRes.ok) {
+            const updated = await updateRes.json();
+            if (updated && updated.length > 0) {
+              console.log('Updated call_history by call_sid:', updated[0].id);
+              return new Response(
+                JSON.stringify({ success: true, updated: updated[0] }),
+                { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+              );
+            }
+          }
         }
       }
     }
