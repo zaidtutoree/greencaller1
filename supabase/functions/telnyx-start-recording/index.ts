@@ -158,13 +158,23 @@ serve(async (req) => {
       }
 
       // Try 3: Look up the PSTN leg's Call Control ID from call_history
-      // The call.initiated webhook stores the v3: ID mapped from the WebRTC UUID
+      // The call.initiated webhook stores the v3: ID by mapping via to_number
       if (!found) {
         try {
-          const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+          const supabaseUrlInner = Deno.env.get('SUPABASE_URL')!;
           const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
-          // Find most recent outbound call with a v3: call_sid (the PSTN leg)
-          const searchUrl = `${supabaseUrl}/rest/v1/call_history?direction=eq.outbound&created_at=gte.${encodeURIComponent(fiveMinAgo)}&call_sid=like.v3%3A*&order=created_at.desc&limit=1&select=call_sid`;
+
+          // Prefer searching by to_number (which we receive) for accuracy
+          // Falls back to most recent outbound with v3: prefix
+          let searchUrl: string;
+          if (toNumber) {
+            searchUrl = `${supabaseUrlInner}/rest/v1/call_history?direction=eq.outbound&to_number=eq.${encodeURIComponent(toNumber)}&created_at=gte.${encodeURIComponent(fiveMinAgo)}&order=created_at.desc&limit=1&select=call_sid`;
+          } else {
+            // Use %25 (URL-encoded %) for SQL LIKE wildcard
+            searchUrl = `${supabaseUrlInner}/rest/v1/call_history?direction=eq.outbound&created_at=gte.${encodeURIComponent(fiveMinAgo)}&call_sid=like.v3%3A%25&order=created_at.desc&limit=1&select=call_sid`;
+          }
+
+          console.log('DB lookup URL:', searchUrl);
           const searchRes = await fetch(searchUrl, {
             headers: {
               'apikey': Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
@@ -173,11 +183,20 @@ serve(async (req) => {
           });
           if (searchRes.ok) {
             const rows = await searchRes.json();
+            console.log('DB lookup result rows:', rows);
             if (Array.isArray(rows) && rows.length > 0 && rows[0].call_sid) {
-              callControlId = rows[0].call_sid;
-              console.log('Found PSTN Call Control ID from call_history:', callControlId);
-              found = true;
+              const foundSid = rows[0].call_sid;
+              // Only use it if it's a Call Control ID (v2:/v3:), not the WebRTC UUID
+              if (foundSid.startsWith('v2:') || foundSid.startsWith('v3:')) {
+                callControlId = foundSid;
+                console.log('Found PSTN Call Control ID from call_history:', callControlId);
+                found = true;
+              } else {
+                console.log('DB returned non-v3 call_sid (webhook may not have fired yet):', foundSid);
+              }
             }
+          } else {
+            console.log('DB lookup HTTP error:', searchRes.status, await searchRes.text());
           }
         } catch (e) {
           console.log('DB lookup for PSTN Call Control ID failed:', e);
