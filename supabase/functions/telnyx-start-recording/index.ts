@@ -162,12 +162,12 @@ serve(async (req) => {
       if (!found) {
         try {
           const supabaseUrlInner = Deno.env.get('SUPABASE_URL')!;
-          const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+          // Extended to 1 hour to handle race conditions and long calls
+          const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
 
-          // Get the most recent outbound call (any format), then check if the
-          // last digits of to_number match. This handles format mismatches
-          // (e.g. caller passed "07491..." but DB has "+447491...").
-          const searchUrl = `${supabaseUrlInner}/rest/v1/call_history?direction=eq.outbound&created_at=gte.${encodeURIComponent(fiveMinAgo)}&order=created_at.desc&limit=5&select=call_sid,to_number`;
+          // Get the 10 most recent outbound calls (no direction filter to debug)
+          // Match by last 9 digits of to_number for format-independence
+          const searchUrl = `${supabaseUrlInner}/rest/v1/call_history?created_at=gte.${encodeURIComponent(oneHourAgo)}&order=created_at.desc&limit=10&select=call_sid,to_number,direction,created_at,status`;
 
           console.log('DB lookup URL:', searchUrl);
           const searchRes = await fetch(searchUrl, {
@@ -181,28 +181,45 @@ serve(async (req) => {
             console.log('DB lookup result rows:', rows);
 
             if (Array.isArray(rows) && rows.length > 0) {
+              console.log('Total rows returned:', rows.length);
               // Normalize numbers to digits-only for comparison
               const normalizeNum = (n: string | undefined) => (n || '').replace(/[^0-9]/g, '');
               const targetDigits = normalizeNum(toNumber);
-              // Take last 9 digits to handle country code differences
               const targetLast9 = targetDigits.slice(-9);
 
+              // Pass 1: prefer outbound rows with matching digits AND v3: call_sid
               for (const row of rows) {
+                if (row.direction !== 'outbound') continue;
                 const rowDigits = normalizeNum(row.to_number);
                 const rowLast9 = rowDigits.slice(-9);
                 const sidMatches = row.call_sid && (row.call_sid.startsWith('v2:') || row.call_sid.startsWith('v3:'));
-
-                // Match if last 9 digits match AND has a valid Call Control ID
-                if (sidMatches && (!targetLast9 || rowLast9 === targetLast9)) {
+                if (sidMatches && rowLast9 === targetLast9) {
                   callControlId = row.call_sid;
-                  console.log('Found PSTN Call Control ID via fuzzy match:', callControlId, 'row:', row);
+                  console.log('Found PSTN Call Control ID (matched digits):', callControlId);
                   found = true;
                   break;
                 }
               }
+
+              // Pass 2: any recent outbound v3: call_sid (caller may have called multiple)
               if (!found) {
-                console.log('No matching v3: call_sid found. Target digits:', targetLast9, 'Rows:', rows);
+                for (const row of rows) {
+                  if (row.direction !== 'outbound') continue;
+                  if (row.call_sid && (row.call_sid.startsWith('v2:') || row.call_sid.startsWith('v3:'))) {
+                    callControlId = row.call_sid;
+                    console.log('Found PSTN Call Control ID (most recent v3):', callControlId);
+                    found = true;
+                    break;
+                  }
+                }
               }
+
+              if (!found) {
+                console.log('No matching v3: call_sid found. Target digits:', targetLast9);
+                console.log('All rows:', JSON.stringify(rows, null, 2));
+              }
+            } else {
+              console.log('No call_history rows found in last hour at all');
             }
           } else {
             console.log('DB lookup HTTP error:', searchRes.status, await searchRes.text());
