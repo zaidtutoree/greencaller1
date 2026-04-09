@@ -60,17 +60,19 @@ serve(async (req) => {
           const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
           const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
           const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
-          const searchUrl = `${supabaseUrl}/rest/v1/call_history?direction=eq.outbound&created_at=gte.${encodeURIComponent(fiveMinAgo)}&call_sid=like.v3%3A%25&order=created_at.desc&limit=1&select=call_sid`;
+          const searchUrl = `${supabaseUrl}/rest/v1/call_history?direction=eq.outbound&created_at=gte.${encodeURIComponent(fiveMinAgo)}&order=created_at.desc&limit=5&select=call_sid`;
           const searchRes = await fetch(searchUrl, {
             headers: { 'apikey': supabaseKey, 'Authorization': `Bearer ${supabaseKey}` },
           });
           if (searchRes.ok) {
             const rows = await searchRes.json();
-            if (Array.isArray(rows) && rows.length > 0 && rows[0].call_sid) {
-              const foundSid = rows[0].call_sid;
-              if (foundSid.startsWith('v2:') || foundSid.startsWith('v3:')) {
-                callControlId = foundSid;
-                console.log('Found PSTN Call Control ID from DB:', callControlId);
+            if (Array.isArray(rows) && rows.length > 0) {
+              for (const row of rows) {
+                if (row.call_sid && (row.call_sid.startsWith('v2:') || row.call_sid.startsWith('v3:'))) {
+                  callControlId = row.call_sid;
+                  console.log('Found PSTN Call Control ID from DB:', callControlId);
+                  break;
+                }
               }
             }
           }

@@ -164,15 +164,10 @@ serve(async (req) => {
           const supabaseUrlInner = Deno.env.get('SUPABASE_URL')!;
           const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
 
-          // Prefer searching by to_number (which we receive) for accuracy
-          // Falls back to most recent outbound with v3: prefix
-          let searchUrl: string;
-          if (toNumber) {
-            searchUrl = `${supabaseUrlInner}/rest/v1/call_history?direction=eq.outbound&to_number=eq.${encodeURIComponent(toNumber)}&created_at=gte.${encodeURIComponent(fiveMinAgo)}&order=created_at.desc&limit=1&select=call_sid`;
-          } else {
-            // Use %25 (URL-encoded %) for SQL LIKE wildcard
-            searchUrl = `${supabaseUrlInner}/rest/v1/call_history?direction=eq.outbound&created_at=gte.${encodeURIComponent(fiveMinAgo)}&call_sid=like.v3%3A%25&order=created_at.desc&limit=1&select=call_sid`;
-          }
+          // Get the most recent outbound call (any format), then check if the
+          // last digits of to_number match. This handles format mismatches
+          // (e.g. caller passed "07491..." but DB has "+447491...").
+          const searchUrl = `${supabaseUrlInner}/rest/v1/call_history?direction=eq.outbound&created_at=gte.${encodeURIComponent(fiveMinAgo)}&order=created_at.desc&limit=5&select=call_sid,to_number`;
 
           console.log('DB lookup URL:', searchUrl);
           const searchRes = await fetch(searchUrl, {
@@ -184,15 +179,29 @@ serve(async (req) => {
           if (searchRes.ok) {
             const rows = await searchRes.json();
             console.log('DB lookup result rows:', rows);
-            if (Array.isArray(rows) && rows.length > 0 && rows[0].call_sid) {
-              const foundSid = rows[0].call_sid;
-              // Only use it if it's a Call Control ID (v2:/v3:), not the WebRTC UUID
-              if (foundSid.startsWith('v2:') || foundSid.startsWith('v3:')) {
-                callControlId = foundSid;
-                console.log('Found PSTN Call Control ID from call_history:', callControlId);
-                found = true;
-              } else {
-                console.log('DB returned non-v3 call_sid (webhook may not have fired yet):', foundSid);
+
+            if (Array.isArray(rows) && rows.length > 0) {
+              // Normalize numbers to digits-only for comparison
+              const normalizeNum = (n: string | undefined) => (n || '').replace(/[^0-9]/g, '');
+              const targetDigits = normalizeNum(toNumber);
+              // Take last 9 digits to handle country code differences
+              const targetLast9 = targetDigits.slice(-9);
+
+              for (const row of rows) {
+                const rowDigits = normalizeNum(row.to_number);
+                const rowLast9 = rowDigits.slice(-9);
+                const sidMatches = row.call_sid && (row.call_sid.startsWith('v2:') || row.call_sid.startsWith('v3:'));
+
+                // Match if last 9 digits match AND has a valid Call Control ID
+                if (sidMatches && (!targetLast9 || rowLast9 === targetLast9)) {
+                  callControlId = row.call_sid;
+                  console.log('Found PSTN Call Control ID via fuzzy match:', callControlId, 'row:', row);
+                  found = true;
+                  break;
+                }
+              }
+              if (!found) {
+                console.log('No matching v3: call_sid found. Target digits:', targetLast9, 'Rows:', rows);
               }
             }
           } else {
