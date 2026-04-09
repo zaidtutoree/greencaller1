@@ -508,13 +508,23 @@ export const useTelnyxCall = ({ userId, assignedNumber, enabled = true }: UseTel
 
               if (callState === "active") {
                 console.log("Outbound SDK call connected:", call.id);
-                console.log("Outbound SDK call details:", {
-                  id: call.id,
-                  callControlId: call.call_control_id || call.callControlId,
-                  telnyxCallControlId: call.telnyxCallControlId,
-                  telnyxSessionId: call.telnyxSessionId,
-                  options: call.options,
-                });
+                // Dump ALL properties to find where the Call Control ID lives
+                try {
+                  const allKeys = Object.keys(call);
+                  console.log("Outbound SDK call ALL keys:", allKeys);
+                  const dumpable: Record<string, any> = {};
+                  for (const k of allKeys) {
+                    try {
+                      const v = (call as any)[k];
+                      if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
+                        dumpable[k] = v;
+                      }
+                    } catch {}
+                  }
+                  console.log("Outbound SDK call scalar values:", dumpable);
+                } catch (e) {
+                  console.warn("Failed to dump call object:", e);
+                }
                 activeCallRef.current = call;
                 makingOutboundRef.current = false;
                 attachRemoteStream(call);
