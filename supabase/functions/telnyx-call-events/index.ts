@@ -242,6 +242,29 @@ serve(async (req) => {
       case 'call.answered': {
         console.log('Call answered, client_state:', clientState);
 
+        // For direct WebRTC SDK calls: when the PSTN leg is answered, this is the
+        // ACTIVE call_control_id we should use for recording. Update call_history
+        // with this latest ID so recording targets the live leg, not a stale one.
+        const ansTo = payload?.to;
+        const ansDirection = payload?.direction;
+        const isPstnAnswered = ansTo && ansTo.startsWith('+');
+
+        if (isPstnAnswered && !clientState?.action) {
+          console.log('PSTN leg answered, updating call_history with active call_control_id:', callControlId);
+          const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+          const supabaseUrlForUpdate = Deno.env.get('SUPABASE_URL')!;
+          // Find the most recent outbound call to this number
+          const searchUrl = `${supabaseUrlForUpdate}/rest/v1/call_history?direction=eq.outbound&to_number=eq.${encodeURIComponent(ansTo)}&created_at=gte.${encodeURIComponent(fiveMinAgo)}&order=created_at.desc&limit=1&select=id`;
+          const searchRes = await fetch(searchUrl, { headers: supabaseHeaders() });
+          if (searchRes.ok) {
+            const rows = await searchRes.json();
+            if (Array.isArray(rows) && rows.length > 0) {
+              await supabaseUpdate('call_history', { call_sid: callControlId }, { id: rows[0].id });
+              console.log('Updated call_history id', rows[0].id, 'with active call_control_id:', callControlId);
+            }
+          }
+        }
+
         // Pickup flow: when the agent WebRTC leg answers, join it into the existing department conference.
         if (clientState?.action === 'pickup_join_conference' && clientState?.conferenceName && telnyxApiKey) {
           console.log('Pickup WebRTC leg answered, joining conference:', clientState.conferenceName);
