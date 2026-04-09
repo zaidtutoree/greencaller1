@@ -162,20 +162,24 @@ serve(async (req) => {
       if (!found) {
         try {
           const supabaseUrlInner = Deno.env.get('SUPABASE_URL')!;
-          // Extended to 1 hour to handle race conditions and long calls
-          const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+          const supabaseKeyInner = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+          console.log('Env check - URL set:', !!supabaseUrlInner, 'Key length:', supabaseKeyInner?.length || 0);
 
-          // Get the 10 most recent outbound calls (no direction filter to debug)
-          // Match by last 9 digits of to_number for format-independence
-          const searchUrl = `${supabaseUrlInner}/rest/v1/call_history?created_at=gte.${encodeURIComponent(oneHourAgo)}&order=created_at.desc&limit=10&select=call_sid,to_number,direction,created_at,status`;
+          // Get the 10 most recent calls — no time/direction filter for debug
+          const searchUrl = `${supabaseUrlInner}/rest/v1/call_history?order=created_at.desc&limit=10&select=call_sid,to_number,direction,created_at,status`;
 
           console.log('DB lookup URL:', searchUrl);
           const searchRes = await fetch(searchUrl, {
             headers: {
-              'apikey': Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
-              'Authorization': `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!}`,
+              'apikey': supabaseKeyInner,
+              'Authorization': `Bearer ${supabaseKeyInner}`,
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
             },
           });
+          console.log('DB lookup response status:', searchRes.status);
+          const rawText = await searchRes.clone().text();
+          console.log('DB lookup raw response:', rawText.substring(0, 500));
           if (searchRes.ok) {
             const rows = await searchRes.json();
             console.log('DB lookup result rows:', rows);
