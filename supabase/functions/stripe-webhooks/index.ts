@@ -287,41 +287,83 @@ serve(async (req) => {
           `subscription_users?subscription_id=eq.${encodeURIComponent(sub.id)}&select=user_id`
         );
 
-        // Calculate billing period for overage calculation
-        // Stripe provides period_start/period_end on the invoice object (unix timestamps)
-        const invoicePeriodStart = invoice.period_start ? new Date(invoice.period_start * 1000).toISOString() : null;
-        const invoicePeriodEnd = invoice.period_end ? new Date(invoice.period_end * 1000).toISOString() : null;
+        // Calculate the usage period for overage calculation
+        //
+        // How Stripe billing works:
+        // - Trial starts April 5 (1 day trial)
+        // - April 6: trial ends, first invoice fires (invoice.upcoming)
+        //   → We report overages from April 5 (trial start) to now
+        //   → Invoice = monthly fee + trial overages
+        // - May 6: second invoice fires (invoice.upcoming)
+        //   → We report overages from April 6 to now (current period only)
+        //   → Invoice = monthly fee + this month's overages
+        //
+        // To determine the usage start:
+        // - Get the Stripe subscription's current_period_start
+        // - If subscription had a trial, and this is the first invoice,
+        //   extend back to trial/creation start
 
-        // Get subscription creation/trial start date
-        const subCreatedAt = sub.created_at ? new Date(sub.created_at).toISOString() : null;
-        const trialStartDate = sub.trial_start ? new Date(sub.trial_start).toISOString() : subCreatedAt;
+        // Fetch the actual Stripe subscription to get current_period_start and trial info
+        let usagePeriodStart: string;
+        let usagePeriodEnd = new Date().toISOString();
 
-        // Determine if this is the FIRST invoice (after trial ends)
-        // If the subscription was created AFTER the invoice period start, this is the first invoice
-        // and we need to include trial period usage
-        let periodStart: string;
-        if (trialStartDate && invoicePeriodStart && trialStartDate < invoicePeriodStart) {
-          // First invoice after trial: subscription was created before this billing period
-          // Check if we've already billed before (more than 1 invoice = not the first)
-          // Use a simple heuristic: if trial/creation was within 45 days of period start, include it
-          const trialMs = new Date(invoicePeriodStart).getTime() - new Date(trialStartDate).getTime();
-          const trialDays = trialMs / (1000 * 60 * 60 * 24);
-          if (trialDays <= 45) {
-            // First invoice — extend period back to include trial usage
-            periodStart = trialStartDate;
-            console.log('First invoice detected — including trial period from:', trialStartDate);
+        try {
+          const stripeSubResp = await fetch(
+            `https://api.stripe.com/v1/subscriptions/${encodeURIComponent(stripeSubId)}`,
+            {
+              headers: { "Authorization": `Bearer ${STRIPE_SECRET_KEY}` },
+            }
+          );
+
+          if (stripeSubResp.ok) {
+            const stripeSub = await stripeSubResp.json();
+            const currentPeriodStart = stripeSub.current_period_start
+              ? new Date(stripeSub.current_period_start * 1000).toISOString()
+              : null;
+            const trialStart = stripeSub.trial_start
+              ? new Date(stripeSub.trial_start * 1000).toISOString()
+              : null;
+            const trialEnd = stripeSub.trial_end
+              ? new Date(stripeSub.trial_end * 1000).toISOString()
+              : null;
+
+            console.log('Stripe subscription info:', {
+              currentPeriodStart,
+              trialStart,
+              trialEnd,
+              status: stripeSub.status,
+            });
+
+            // If this is the first billing period (current_period_start == trial_end),
+            // include the trial period in the usage calculation
+            if (trialStart && currentPeriodStart && trialEnd) {
+              const periodStartMs = new Date(currentPeriodStart).getTime();
+              const trialEndMs = new Date(trialEnd).getTime();
+              // First invoice: current_period_start is at or near trial_end
+              if (Math.abs(periodStartMs - trialEndMs) < 24 * 60 * 60 * 1000) {
+                usagePeriodStart = trialStart;
+                console.log('First invoice after trial — counting from trial start:', trialStart);
+              } else {
+                usagePeriodStart = currentPeriodStart;
+                console.log('Subsequent invoice — counting from period start:', currentPeriodStart);
+              }
+            } else {
+              usagePeriodStart = currentPeriodStart || sub.created_at || new Date().toISOString();
+              console.log('No trial — counting from:', usagePeriodStart);
+            }
           } else {
-            // Subsequent invoice — only count current billing period
-            periodStart = invoicePeriodStart;
-            console.log('Subsequent invoice — using billing period start:', invoicePeriodStart);
+            console.error('Failed to fetch Stripe subscription:', await stripeSubResp.text());
+            usagePeriodStart = sub.created_at || new Date().toISOString();
           }
-        } else {
-          // Normal case: use invoice period or fall back to month start
-          periodStart = invoicePeriodStart || new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString();
+        } catch (e) {
+          console.error('Error fetching Stripe subscription:', e);
+          usagePeriodStart = sub.created_at || new Date().toISOString();
         }
-        const periodEnd = invoicePeriodEnd || new Date().toISOString();
 
-        console.log('Billing period for usage calc:', { periodStart, periodEnd, invoicePeriodStart, invoicePeriodEnd, trialStartDate });
+        const periodStart = usagePeriodStart;
+        const periodEnd = usagePeriodEnd;
+
+        console.log('Final usage period:', { periodStart, periodEnd });
 
         let totalOverageMins = 0;
         for (const su of (subUsers || [])) {
