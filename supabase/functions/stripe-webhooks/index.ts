@@ -287,10 +287,28 @@ serve(async (req) => {
           `subscription_users?subscription_id=eq.${encodeURIComponent(sub.id)}&select=user_id`
         );
 
-        // Calculate billing period
-        const now = new Date();
-        const periodStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
-        const periodEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59).toISOString();
+        // Calculate billing period — use the invoice's period OR subscription dates
+        // For the first invoice after trial, this should cover the entire trial period
+        // so trial overages are included in the first real charge
+        const invoicePeriodStart = invoice.period_start ? new Date(invoice.period_start * 1000).toISOString() : null;
+        const invoicePeriodEnd = invoice.period_end ? new Date(invoice.period_end * 1000).toISOString() : null;
+
+        // Also get the subscription's trial start to capture trial-period usage
+        let trialStart: string | null = null;
+        if (sub.trial_start) {
+          trialStart = new Date(sub.trial_start).toISOString();
+        } else if (sub.created_at) {
+          trialStart = new Date(sub.created_at).toISOString();
+        }
+
+        // Use the earliest of: invoice period start, trial start, or subscription created_at
+        const candidateStarts = [invoicePeriodStart, trialStart].filter(Boolean) as string[];
+        const periodStart = candidateStarts.length > 0
+          ? candidateStarts.sort()[0] // earliest date
+          : new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString();
+        const periodEnd = invoicePeriodEnd || new Date().toISOString();
+
+        console.log('Billing period for usage calc:', { periodStart, periodEnd, invoicePeriodStart, invoicePeriodEnd, trialStart });
 
         let totalOverageMins = 0;
         for (const su of (subUsers || [])) {
