@@ -287,28 +287,41 @@ serve(async (req) => {
           `subscription_users?subscription_id=eq.${encodeURIComponent(sub.id)}&select=user_id`
         );
 
-        // Calculate billing period — use the invoice's period OR subscription dates
-        // For the first invoice after trial, this should cover the entire trial period
-        // so trial overages are included in the first real charge
+        // Calculate billing period for overage calculation
+        // Stripe provides period_start/period_end on the invoice object (unix timestamps)
         const invoicePeriodStart = invoice.period_start ? new Date(invoice.period_start * 1000).toISOString() : null;
         const invoicePeriodEnd = invoice.period_end ? new Date(invoice.period_end * 1000).toISOString() : null;
 
-        // Also get the subscription's trial start to capture trial-period usage
-        let trialStart: string | null = null;
-        if (sub.trial_start) {
-          trialStart = new Date(sub.trial_start).toISOString();
-        } else if (sub.created_at) {
-          trialStart = new Date(sub.created_at).toISOString();
-        }
+        // Get subscription creation/trial start date
+        const subCreatedAt = sub.created_at ? new Date(sub.created_at).toISOString() : null;
+        const trialStartDate = sub.trial_start ? new Date(sub.trial_start).toISOString() : subCreatedAt;
 
-        // Use the earliest of: invoice period start, trial start, or subscription created_at
-        const candidateStarts = [invoicePeriodStart, trialStart].filter(Boolean) as string[];
-        const periodStart = candidateStarts.length > 0
-          ? candidateStarts.sort()[0] // earliest date
-          : new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString();
+        // Determine if this is the FIRST invoice (after trial ends)
+        // If the subscription was created AFTER the invoice period start, this is the first invoice
+        // and we need to include trial period usage
+        let periodStart: string;
+        if (trialStartDate && invoicePeriodStart && trialStartDate < invoicePeriodStart) {
+          // First invoice after trial: subscription was created before this billing period
+          // Check if we've already billed before (more than 1 invoice = not the first)
+          // Use a simple heuristic: if trial/creation was within 45 days of period start, include it
+          const trialMs = new Date(invoicePeriodStart).getTime() - new Date(trialStartDate).getTime();
+          const trialDays = trialMs / (1000 * 60 * 60 * 24);
+          if (trialDays <= 45) {
+            // First invoice — extend period back to include trial usage
+            periodStart = trialStartDate;
+            console.log('First invoice detected — including trial period from:', trialStartDate);
+          } else {
+            // Subsequent invoice — only count current billing period
+            periodStart = invoicePeriodStart;
+            console.log('Subsequent invoice — using billing period start:', invoicePeriodStart);
+          }
+        } else {
+          // Normal case: use invoice period or fall back to month start
+          periodStart = invoicePeriodStart || new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString();
+        }
         const periodEnd = invoicePeriodEnd || new Date().toISOString();
 
-        console.log('Billing period for usage calc:', { periodStart, periodEnd, invoicePeriodStart, invoicePeriodEnd, trialStart });
+        console.log('Billing period for usage calc:', { periodStart, periodEnd, invoicePeriodStart, invoicePeriodEnd, trialStartDate });
 
         let totalOverageMins = 0;
         for (const su of (subUsers || [])) {
