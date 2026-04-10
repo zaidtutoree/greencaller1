@@ -987,7 +987,10 @@ export const useTelnyxCall = ({ userId, assignedNumber, enabled = true }: UseTel
             status: 'initiated',
             callSid: call.id,
           },
-        }).catch((e: any) => console.warn("Failed to log call to history:", e));
+        }).then(({ data, error }) => {
+          if (error) console.error("CALL HISTORY CREATE ERROR:", error);
+          else console.log("CALL HISTORY CREATE SUCCESS:", data);
+        }).catch((e: any) => console.error("CALL HISTORY CREATE EXCEPTION:", e));
 
         toast({
           title: "Call initiated",
