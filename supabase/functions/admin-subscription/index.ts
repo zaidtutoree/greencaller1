@@ -321,19 +321,20 @@ serve(async (req) => {
           return jsonResponse({ error: `Stripe price error: ${stripeErr.message}` }, 500);
         }
 
-        // 3. Create metered overage Price (standard metered, NOT billing meter)
-        // Standard metered prices work with subscriptionItems.createUsageRecord
-        // and properly defer charges to the end of billing period / after trial
-        console.log('Step 4: Creating metered overage price...');
+        // 3. Create metered overage Price backed by billing meter
+        // Stripe API 2025-03-31+ requires billing meters for metered prices
+        console.log('Step 4: Getting/creating billing meter...');
         let overagePrice;
+        let meterId: string;
         try {
+          meterId = await getOrCreateOverageMeter();
           overagePrice = await stripeRequest("prices", "POST", {
             product: product.id,
             unit_amount: "4",
             currency: "gbp",
             "recurring[interval]": "month",
+            "recurring[meter]": meterId,
             "recurring[usage_type]": "metered",
-            "recurring[aggregate_usage]": "sum",
             nickname: "Overage minutes (4p/min)",
           });
           console.log('Overage price created:', overagePrice.id);

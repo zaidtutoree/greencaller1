@@ -389,51 +389,44 @@ serve(async (req) => {
           totalOverageMins += Math.max(0, outboundMins - outboundLimit) + Math.max(0, inboundMins - inboundLimit);
         }
 
-        // Report usage to Stripe via subscription item usage records
-        // This is the correct way to report metered usage for overage billing
-        if (totalOverageMins > 0 && sub.stripe_subscription_item_id) {
-          const params = new URLSearchParams();
-          params.append("quantity", String(totalOverageMins));
-          params.append("action", "set"); // "set" replaces previous value (not "increment")
-          params.append("timestamp", String(Math.floor(Date.now() / 1000)));
+        // Report usage to Stripe via Billing Meter Events API
+        // Stripe 2025-03-31+ requires metered prices to be backed by billing meters
+        // Meter events are sent per-minute of overage, with the customer's stripe ID
+        if (totalOverageMins > 0) {
+          // Get the Stripe customer ID for this subscription's lead user
+          const leadProfiles = await supabaseRest(
+            `profiles?id=eq.${encodeURIComponent(sub.lead_user_id)}&select=stripe_customer_id`
+          );
+          const stripeCustomerId = Array.isArray(leadProfiles) && leadProfiles[0]?.stripe_customer_id;
 
-          const usageResp = await fetch(
-            `https://api.stripe.com/v1/subscription_items/${encodeURIComponent(sub.stripe_subscription_item_id)}/usage_records`,
-            {
+          if (stripeCustomerId) {
+            // Send a single meter event with the total overage quantity
+            const params = new URLSearchParams();
+            params.append("event_name", "greencaller_overage_minutes");
+            params.append("payload[value]", String(totalOverageMins));
+            params.append("payload[stripe_customer_id]", stripeCustomerId);
+            params.append("timestamp", String(Math.floor(Date.now() / 1000)));
+
+            const meterResp = await fetch("https://api.stripe.com/v1/billing/meter_events", {
               method: "POST",
               headers: {
                 "Authorization": `Bearer ${STRIPE_SECRET_KEY}`,
                 "Content-Type": "application/x-www-form-urlencoded",
               },
               body: params.toString(),
-            }
-          );
+            });
 
-          if (usageResp.ok) {
-            console.log("Reported overage usage to Stripe:", { subId: sub.id, totalOverageMins, subscriptionItemId: sub.stripe_subscription_item_id });
+            if (meterResp.ok) {
+              console.log("Reported overage via billing meter event:", { subId: sub.id, totalOverageMins, stripeCustomerId });
+            } else {
+              const errText = await meterResp.text();
+              console.error("Failed to report meter event:", errText);
+            }
           } else {
-            const errText = await usageResp.text();
-            console.error("Failed to report usage to Stripe:", errText);
+            console.error("No stripe_customer_id found for lead user:", sub.lead_user_id);
           }
-        } else if (totalOverageMins === 0 && sub.stripe_subscription_item_id) {
-          // Report zero usage so previous overages don't carry over
-          const params = new URLSearchParams();
-          params.append("quantity", "0");
-          params.append("action", "set");
-          params.append("timestamp", String(Math.floor(Date.now() / 1000)));
-
-          await fetch(
-            `https://api.stripe.com/v1/subscription_items/${encodeURIComponent(sub.stripe_subscription_item_id)}/usage_records`,
-            {
-              method: "POST",
-              headers: {
-                "Authorization": `Bearer ${STRIPE_SECRET_KEY}`,
-                "Content-Type": "application/x-www-form-urlencoded",
-              },
-              body: params.toString(),
-            }
-          );
-          console.log("Reported zero overage usage for:", sub.id);
+        } else {
+          console.log("No overages to report for:", sub.id);
         }
 
         break;
