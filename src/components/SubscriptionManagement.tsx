@@ -109,6 +109,7 @@ const SubscriptionManagement = () => {
   const [selectedUserIds, setSelectedUserIds] = useState<string[]>([]);
   const [leadUserId, setLeadUserId] = useState("");
   const [trialDays, setTrialDays] = useState(14);
+  const [trialUnit, setTrialUnit] = useState<"days" | "hours">("days");
   const [amountPounds, setAmountPounds] = useState("");
   const [inviteEmailTo, setInviteEmailTo] = useState("");
   const [inviteEmailFrom, setInviteEmailFrom] = useState("");
@@ -201,7 +202,8 @@ const SubscriptionManagement = () => {
           action: "create",
           userIds: selectedUserIds,
           leadUserId,
-          trialPeriodDays: trialDays,
+          trialPeriodDays: trialUnit === "days" ? trialDays : 0,
+          trialPeriodHours: trialUnit === "hours" ? trialDays : 0,
           amountPence: Math.round(parseFloat(amountPounds) * 100),
           inviteEmailTo,
           inviteEmailFrom,
@@ -229,6 +231,7 @@ const SubscriptionManagement = () => {
     setSelectedUserIds([]);
     setLeadUserId("");
     setTrialDays(14);
+    setTrialUnit("days");
     setAmountPounds("");
     setInviteEmailTo("");
     setInviteEmailFrom("");
@@ -354,14 +357,26 @@ const SubscriptionManagement = () => {
                   {/* Trial & Amount */}
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-2">
-                      <Label htmlFor="trialDays">Trial Period (days)</Label>
-                      <Input
-                        id="trialDays"
-                        type="number"
-                        min="0"
-                        value={trialDays}
-                        onChange={(e) => setTrialDays(parseInt(e.target.value) || 0)}
-                      />
+                      <Label htmlFor="trialDays">Trial Period</Label>
+                      <div className="flex gap-2">
+                        <Input
+                          id="trialDays"
+                          type="number"
+                          min="0"
+                          value={trialDays}
+                          onChange={(e) => setTrialDays(parseInt(e.target.value) || 0)}
+                          className="flex-1"
+                        />
+                        <Select value={trialUnit} onValueChange={(v: "days" | "hours") => setTrialUnit(v)}>
+                          <SelectTrigger className="w-24">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="days">Days</SelectItem>
+                            <SelectItem value="hours">Hours</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
                     </div>
                     <div className="space-y-2">
                       <Label htmlFor="amount">Monthly Amount (&pound;)</Label>

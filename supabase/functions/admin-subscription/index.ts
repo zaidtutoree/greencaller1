@@ -256,6 +256,7 @@ serve(async (req) => {
           userIds,        // string[] — all user IDs
           leadUserId,     // string — lead user ID (must be in userIds)
           trialPeriodDays,
+          trialPeriodHours = 0, // optional: trial in hours for testing
           amountPence,    // integer in pence
           inviteEmailTo,
           inviteEmailFrom,
@@ -263,7 +264,7 @@ serve(async (req) => {
           inboundMinsLimit = 1000,
         } = body;
 
-        console.log('Create subscription request:', JSON.stringify({ userIds, leadUserId, trialPeriodDays, amountPence, inviteEmailTo, inviteEmailFrom }));
+        console.log('Create subscription request:', JSON.stringify({ userIds, leadUserId, trialPeriodDays, trialPeriodHours, amountPence, inviteEmailTo, inviteEmailFrom }));
 
         if (!userIds?.length || !leadUserId || amountPence === undefined || !inviteEmailTo || !inviteEmailFrom) {
           return jsonResponse({ error: "Missing required fields", received: { userIds: !!userIds?.length, leadUserId: !!leadUserId, amountPence, inviteEmailTo: !!inviteEmailTo, inviteEmailFrom: !!inviteEmailFrom } }, 400);
@@ -379,7 +380,12 @@ serve(async (req) => {
         checkoutParams.append("success_url", body.successUrl || "https://greencaller.co.uk/?subscription=success");
         checkoutParams.append("cancel_url", body.cancelUrl || "https://greencaller.co.uk/?subscription=cancelled");
         checkoutParams.append("metadata[lead_user_id]", leadUserId);
-        if (trialDays > 0) {
+        if (trialPeriodHours > 0) {
+          // Use trial_end for hour-level precision (Stripe accepts unix timestamp)
+          const trialEndUnix = Math.floor(Date.now() / 1000) + (trialPeriodHours * 3600);
+          checkoutParams.append("subscription_data[trial_end]", String(trialEndUnix));
+          console.log('Trial set in hours:', trialPeriodHours, 'trial_end:', trialEndUnix);
+        } else if (trialDays > 0) {
           checkoutParams.append("subscription_data[trial_period_days]", String(trialDays));
         }
         checkoutParams.append("subscription_data[metadata][lead_user_id]", leadUserId);
