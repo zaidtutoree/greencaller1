@@ -188,6 +188,7 @@ serve(async (req) => {
           break;
         }
 
+        const previousStatus = sub.status;
         let dbStatus: string;
         let canMakeCalls = true;
         switch (stripeSub.status) {
@@ -206,7 +207,88 @@ serve(async (req) => {
         );
         await updateSubscriptionUsers(sub.id, dbStatus, canMakeCalls);
 
-        console.log("Subscription updated:", { id: sub.id, status: dbStatus });
+        console.log("Subscription updated:", { id: sub.id, status: dbStatus, previousStatus });
+
+        // When trial ends (trialing → active), report any trial period overages
+        // invoice.upcoming may not fire for short trials, so we catch it here
+        if (previousStatus === "trialing" && dbStatus === "active") {
+          console.log("Trial ended — calculating trial period overages...");
+
+          const trialStart = stripeSub.trial_start
+            ? new Date(stripeSub.trial_start * 1000).toISOString()
+            : (sub.created_at || new Date().toISOString());
+          const trialEnd = stripeSub.trial_end
+            ? new Date(stripeSub.trial_end * 1000).toISOString()
+            : new Date().toISOString();
+
+          console.log("Trial period:", { trialStart, trialEnd });
+
+          // Get all users in this subscription
+          const subUsers = await supabaseRest(
+            `subscription_users?subscription_id=eq.${encodeURIComponent(sub.id)}&select=user_id`
+          );
+
+          let totalOverageMins = 0;
+          for (const su of (subUsers || [])) {
+            const userId = su.user_id;
+            const calls = await supabaseRest(
+              `call_history?user_id=eq.${encodeURIComponent(userId)}&created_at=gte.${encodeURIComponent(trialStart)}&created_at=lte.${encodeURIComponent(trialEnd)}&select=direction,duration`
+            );
+
+            let outboundSeconds = 0;
+            let inboundSeconds = 0;
+            if (Array.isArray(calls)) {
+              for (const call of calls) {
+                const dur = call.duration || 0;
+                if (call.direction === "outbound") outboundSeconds += dur;
+                else inboundSeconds += dur;
+              }
+            }
+
+            const outboundLimit = sub.outbound_mins_limit || 500;
+            const inboundLimit = sub.inbound_mins_limit || 1000;
+            const outboundMins = Math.ceil(outboundSeconds / 60);
+            const inboundMins = Math.ceil(inboundSeconds / 60);
+            totalOverageMins += Math.max(0, outboundMins - outboundLimit) + Math.max(0, inboundMins - inboundLimit);
+          }
+
+          console.log("Trial overage minutes:", totalOverageMins);
+
+          if (totalOverageMins > 0) {
+            // Get the Stripe customer ID
+            const leadProfiles = await supabaseRest(
+              `profiles?id=eq.${encodeURIComponent(sub.lead_user_id)}&select=stripe_customer_id`
+            );
+            const stripeCustomerId = Array.isArray(leadProfiles) && leadProfiles[0]?.stripe_customer_id;
+
+            if (stripeCustomerId) {
+              const params = new URLSearchParams();
+              params.append("event_name", "greencaller_overage_minutes");
+              params.append("payload[value]", String(totalOverageMins));
+              params.append("payload[stripe_customer_id]", stripeCustomerId);
+              params.append("timestamp", String(Math.floor(Date.now() / 1000)));
+
+              const meterResp = await fetch("https://api.stripe.com/v1/billing/meter_events", {
+                method: "POST",
+                headers: {
+                  "Authorization": `Bearer ${STRIPE_SECRET_KEY}`,
+                  "Content-Type": "application/x-www-form-urlencoded",
+                },
+                body: params.toString(),
+              });
+
+              if (meterResp.ok) {
+                console.log("Trial overages reported via meter event:", { totalOverageMins, stripeCustomerId });
+              } else {
+                const errText = await meterResp.text();
+                console.error("Failed to report trial overage meter event:", errText);
+              }
+            } else {
+              console.error("No stripe_customer_id for lead user:", sub.lead_user_id);
+            }
+          }
+        }
+
         break;
       }
 
