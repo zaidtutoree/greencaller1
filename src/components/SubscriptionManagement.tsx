@@ -201,7 +201,7 @@ const SubscriptionManagement = () => {
           action: "create",
           userIds: selectedUserIds,
           leadUserId,
-          trialPeriodDays: Math.max(trialDays, trialDays > 0 ? 2 : 0),
+          trialPeriodDays: trialDays,
           amountPence: Math.round(parseFloat(amountPounds) * 100),
           inviteEmailTo,
           inviteEmailFrom,
@@ -354,7 +354,7 @@ const SubscriptionManagement = () => {
                   {/* Trial & Amount */}
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-2">
-                      <Label htmlFor="trialDays">Trial Period (days, min 2)</Label>
+                      <Label htmlFor="trialDays">Trial Period (days)</Label>
                       <Input
                         id="trialDays"
                         type="number"
