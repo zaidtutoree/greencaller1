@@ -380,12 +380,7 @@ serve(async (req) => {
         checkoutParams.append("success_url", body.successUrl || "https://greencaller.co.uk/?subscription=success");
         checkoutParams.append("cancel_url", body.cancelUrl || "https://greencaller.co.uk/?subscription=cancelled");
         checkoutParams.append("metadata[lead_user_id]", leadUserId);
-        if (trialPeriodHours > 0) {
-          // Use trial_end for hour-level precision (Stripe accepts unix timestamp)
-          const trialEndUnix = Math.floor(Date.now() / 1000) + (trialPeriodHours * 3600);
-          checkoutParams.append("subscription_data[trial_end]", String(trialEndUnix));
-          console.log('Trial set in hours:', trialPeriodHours, 'trial_end:', trialEndUnix);
-        } else if (trialDays > 0) {
+        if (trialDays > 0) {
           checkoutParams.append("subscription_data[trial_period_days]", String(trialDays));
         }
         checkoutParams.append("subscription_data[metadata][lead_user_id]", leadUserId);
