@@ -262,11 +262,19 @@ serve(async (req) => {
             const stripeCustomerId = Array.isArray(leadProfiles) && leadProfiles[0]?.stripe_customer_id;
 
             if (stripeCustomerId) {
+              // Use a timestamp DURING the trial period (1 hour before trial end)
+              // so Stripe attributes it to the trial/first billing period invoice,
+              // not the next month's invoice
+              const trialEndUnix = stripeSub.trial_end || Math.floor(Date.now() / 1000);
+              const meterTimestamp = trialEndUnix - 3600; // 1 hour before trial end
+
+              console.log("Sending meter event with timestamp:", meterTimestamp, "trial_end:", trialEndUnix);
+
               const params = new URLSearchParams();
               params.append("event_name", "greencaller_overage_minutes");
               params.append("payload[value]", String(totalOverageMins));
               params.append("payload[stripe_customer_id]", stripeCustomerId);
-              params.append("timestamp", String(Math.floor(Date.now() / 1000)));
+              params.append("timestamp", String(meterTimestamp));
 
               const meterResp = await fetch("https://api.stripe.com/v1/billing/meter_events", {
                 method: "POST",
@@ -278,7 +286,7 @@ serve(async (req) => {
               });
 
               if (meterResp.ok) {
-                console.log("Trial overages reported via meter event:", { totalOverageMins, stripeCustomerId });
+                console.log("Trial overages reported via meter event:", { totalOverageMins, stripeCustomerId, meterTimestamp });
               } else {
                 const errText = await meterResp.text();
                 console.error("Failed to report trial overage meter event:", errText);
@@ -482,12 +490,18 @@ serve(async (req) => {
           const stripeCustomerId = Array.isArray(leadProfiles) && leadProfiles[0]?.stripe_customer_id;
 
           if (stripeCustomerId) {
-            // Send a single meter event with the total overage quantity
+            // Use a timestamp within the current billing period (not "now")
+            // so Stripe attributes usage to THIS invoice, not the next one
+            const periodEndUnix = Math.floor(new Date(periodEnd).getTime() / 1000);
+            const meterTimestamp = Math.min(periodEndUnix - 3600, Math.floor(Date.now() / 1000));
+
             const params = new URLSearchParams();
             params.append("event_name", "greencaller_overage_minutes");
             params.append("payload[value]", String(totalOverageMins));
             params.append("payload[stripe_customer_id]", stripeCustomerId);
-            params.append("timestamp", String(Math.floor(Date.now() / 1000)));
+            params.append("timestamp", String(meterTimestamp));
+
+            console.log("Sending meter event with timestamp:", meterTimestamp, "periodEnd:", periodEnd);
 
             const meterResp = await fetch("https://api.stripe.com/v1/billing/meter_events", {
               method: "POST",
