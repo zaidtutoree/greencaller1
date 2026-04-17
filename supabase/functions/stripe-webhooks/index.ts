@@ -262,11 +262,11 @@ serve(async (req) => {
             const stripeCustomerId = Array.isArray(leadProfiles) && leadProfiles[0]?.stripe_customer_id;
 
             if (stripeCustomerId) {
-              // Use a timestamp DURING the trial period (1 hour before trial end)
-              // so Stripe attributes it to the trial/first billing period invoice,
-              // not the next month's invoice
+              // Use a timestamp JUST AFTER trial end (in the first paid billing period)
+              // Stripe ignores metered usage during trial periods, so the event must
+              // fall in the first paid period to appear on that invoice
               const trialEndUnix = stripeSub.trial_end || Math.floor(Date.now() / 1000);
-              const meterTimestamp = trialEndUnix - 3600; // 1 hour before trial end
+              const meterTimestamp = trialEndUnix + 60; // 1 minute after trial end
 
               console.log("Sending meter event with timestamp:", meterTimestamp, "trial_end:", trialEndUnix);
 
