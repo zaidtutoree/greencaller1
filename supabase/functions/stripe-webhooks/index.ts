@@ -262,34 +262,69 @@ serve(async (req) => {
             const stripeCustomerId = Array.isArray(leadProfiles) && leadProfiles[0]?.stripe_customer_id;
 
             if (stripeCustomerId) {
-              // Use a timestamp JUST AFTER trial end (in the first paid billing period)
-              // Stripe ignores metered usage during trial periods, so the event must
-              // fall in the first paid period to appear on that invoice
-              const trialEndUnix = stripeSub.trial_end || Math.floor(Date.now() / 1000);
-              const meterTimestamp = trialEndUnix + 60; // 1 minute after trial end
+              // Create a one-time invoice item for trial overages and invoice it immediately.
+              // Meter events don't work here because:
+              // - During trial: Stripe ignores metered usage
+              // - After trial: the subscription invoice is already finalized
+              // So we create a separate invoice for the trial overage charge.
+              const overageAmountPence = totalOverageMins * 4; // 4p per minute
 
-              console.log("Sending meter event with timestamp:", meterTimestamp, "trial_end:", trialEndUnix);
+              console.log("Creating trial overage invoice item:", { totalOverageMins, overageAmountPence, stripeCustomerId });
 
-              const params = new URLSearchParams();
-              params.append("event_name", "greencaller_overage_minutes");
-              params.append("payload[value]", String(totalOverageMins));
-              params.append("payload[stripe_customer_id]", stripeCustomerId);
-              params.append("timestamp", String(meterTimestamp));
+              // Step 1: Create an invoice item on the customer
+              const itemParams = new URLSearchParams();
+              itemParams.append("customer", stripeCustomerId);
+              itemParams.append("amount", String(overageAmountPence));
+              itemParams.append("currency", "gbp");
+              itemParams.append("description", `Call overage during trial period: ${totalOverageMins} minutes at 4p/min`);
 
-              const meterResp = await fetch("https://api.stripe.com/v1/billing/meter_events", {
+              const itemResp = await fetch("https://api.stripe.com/v1/invoiceitems", {
                 method: "POST",
                 headers: {
                   "Authorization": `Bearer ${STRIPE_SECRET_KEY}`,
                   "Content-Type": "application/x-www-form-urlencoded",
                 },
-                body: params.toString(),
+                body: itemParams.toString(),
               });
 
-              if (meterResp.ok) {
-                console.log("Trial overages reported via meter event:", { totalOverageMins, stripeCustomerId, meterTimestamp });
+              if (itemResp.ok) {
+                console.log("Invoice item created for trial overages");
+
+                // Step 2: Create and finalize an invoice for this item
+                const invoiceParams = new URLSearchParams();
+                invoiceParams.append("customer", stripeCustomerId);
+                invoiceParams.append("auto_advance", "true"); // auto-finalize and attempt payment
+                invoiceParams.append("description", "Trial period overage charges");
+
+                const invoiceResp = await fetch("https://api.stripe.com/v1/invoices", {
+                  method: "POST",
+                  headers: {
+                    "Authorization": `Bearer ${STRIPE_SECRET_KEY}`,
+                    "Content-Type": "application/x-www-form-urlencoded",
+                  },
+                  body: invoiceParams.toString(),
+                });
+
+                if (invoiceResp.ok) {
+                  const invoiceData = await invoiceResp.json();
+                  console.log("Trial overage invoice created:", invoiceData.id, "amount:", overageAmountPence);
+
+                  // Step 3: Finalize the invoice to trigger payment
+                  const finalizeResp = await fetch(`https://api.stripe.com/v1/invoices/${invoiceData.id}/finalize`, {
+                    method: "POST",
+                    headers: { "Authorization": `Bearer ${STRIPE_SECRET_KEY}` },
+                  });
+
+                  if (finalizeResp.ok) {
+                    console.log("Trial overage invoice finalized and payment initiated");
+                  } else {
+                    console.error("Failed to finalize trial overage invoice:", await finalizeResp.text());
+                  }
+                } else {
+                  console.error("Failed to create trial overage invoice:", await invoiceResp.text());
+                }
               } else {
-                const errText = await meterResp.text();
-                console.error("Failed to report trial overage meter event:", errText);
+                console.error("Failed to create invoice item:", await itemResp.text());
               }
             } else {
               console.error("No stripe_customer_id for lead user:", sub.lead_user_id);
