@@ -514,44 +514,43 @@ serve(async (req) => {
           totalOverageMins += Math.max(0, outboundMins - outboundLimit) + Math.max(0, inboundMins - inboundLimit);
         }
 
-        // Report usage to Stripe via Billing Meter Events API
-        // Stripe 2025-03-31+ requires metered prices to be backed by billing meters
-        // Meter events are sent per-minute of overage, with the customer's stripe ID
+        // Add overage as a pending invoice item on the customer.
+        // This gets automatically included on the NEXT subscription invoice.
+        // Unlike meter events, invoice items reliably attach to the upcoming invoice.
         if (totalOverageMins > 0) {
-          // Get the Stripe customer ID for this subscription's lead user
           const leadProfiles = await supabaseRest(
             `profiles?id=eq.${encodeURIComponent(sub.lead_user_id)}&select=stripe_customer_id`
           );
           const stripeCustomerId = Array.isArray(leadProfiles) && leadProfiles[0]?.stripe_customer_id;
 
           if (stripeCustomerId) {
-            // Use a timestamp within the current billing period (not "now")
-            // so Stripe attributes usage to THIS invoice, not the next one
-            const periodEndUnix = Math.floor(new Date(periodEnd).getTime() / 1000);
-            const meterTimestamp = Math.min(periodEndUnix - 3600, Math.floor(Date.now() / 1000));
+            const overageAmountPence = totalOverageMins * 4;
 
-            const params = new URLSearchParams();
-            params.append("event_name", "greencaller_overage_minutes");
-            params.append("payload[value]", String(totalOverageMins));
-            params.append("payload[stripe_customer_id]", stripeCustomerId);
-            params.append("timestamp", String(meterTimestamp));
+            console.log("Creating pending invoice item for monthly overages:", { totalOverageMins, overageAmountPence, stripeCustomerId });
 
-            console.log("Sending meter event with timestamp:", meterTimestamp, "periodEnd:", periodEnd);
+            // Create an invoice item attached to the subscription.
+            // Stripe will automatically add it to the next subscription invoice.
+            const itemParams = new URLSearchParams();
+            itemParams.append("customer", stripeCustomerId);
+            itemParams.append("amount", String(overageAmountPence));
+            itemParams.append("currency", "gbp");
+            itemParams.append("description", `Call overage: ${totalOverageMins} minutes at 4p/min (${periodStart.split('T')[0]} to ${periodEnd.split('T')[0]})`);
+            itemParams.append("subscription", sub.stripe_subscription_id);
 
-            const meterResp = await fetch("https://api.stripe.com/v1/billing/meter_events", {
+            const itemResp = await fetch("https://api.stripe.com/v1/invoiceitems", {
               method: "POST",
               headers: {
                 "Authorization": `Bearer ${STRIPE_SECRET_KEY}`,
                 "Content-Type": "application/x-www-form-urlencoded",
               },
-              body: params.toString(),
+              body: itemParams.toString(),
             });
 
-            if (meterResp.ok) {
-              console.log("Reported overage via billing meter event:", { subId: sub.id, totalOverageMins, stripeCustomerId });
+            if (itemResp.ok) {
+              console.log("Pending invoice item created — will appear on next subscription invoice");
             } else {
-              const errText = await meterResp.text();
-              console.error("Failed to report meter event:", errText);
+              const errText = await itemResp.text();
+              console.error("Failed to create overage invoice item:", errText);
             }
           } else {
             console.error("No stripe_customer_id found for lead user:", sub.lead_user_id);
