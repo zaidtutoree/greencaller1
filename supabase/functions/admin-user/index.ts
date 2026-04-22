@@ -64,19 +64,50 @@ serve(async (req) => {
           );
         }
 
-        // Unassign any phone numbers first to avoid foreign key constraints
-        await fetch(
-          `${SUPABASE_URL}/rest/v1/phone_numbers?assigned_to=eq.${userId}`,
-          {
-            method: "PATCH",
-            headers: {
-              "apikey": SUPABASE_SERVICE_ROLE_KEY,
-              "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({ assigned_to: null })
-          }
-        );
+        // Clean up all related records to avoid foreign key constraints
+        const cleanupHeaders = {
+          "apikey": SUPABASE_SERVICE_ROLE_KEY,
+          "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+          "Content-Type": "application/json",
+        };
+
+        // Delete call history
+        await fetch(`${SUPABASE_URL}/rest/v1/call_history?user_id=eq.${userId}`, {
+          method: "DELETE", headers: cleanupHeaders,
+        });
+
+        // Delete call recordings
+        await fetch(`${SUPABASE_URL}/rest/v1/call_recordings?user_id=eq.${userId}`, {
+          method: "DELETE", headers: cleanupHeaders,
+        });
+
+        // Delete WebRTC registrations
+        await fetch(`${SUPABASE_URL}/rest/v1/telnyx_webrtc_registrations?user_id=eq.${userId}`, {
+          method: "DELETE", headers: cleanupHeaders,
+        });
+
+        // Delete call bridges
+        await fetch(`${SUPABASE_URL}/rest/v1/telnyx_call_bridges?user_id=eq.${userId}`, {
+          method: "DELETE", headers: cleanupHeaders,
+        });
+
+        // Delete subscription user links
+        await fetch(`${SUPABASE_URL}/rest/v1/subscription_users?user_id=eq.${userId}`, {
+          method: "DELETE", headers: cleanupHeaders,
+        });
+
+        // Unassign phone numbers
+        await fetch(`${SUPABASE_URL}/rest/v1/phone_numbers?assigned_to=eq.${userId}`, {
+          method: "PATCH", headers: cleanupHeaders,
+          body: JSON.stringify({ assigned_to: null }),
+        });
+
+        // Delete voicemails
+        await fetch(`${SUPABASE_URL}/rest/v1/voicemails?user_id=eq.${userId}`, {
+          method: "DELETE", headers: cleanupHeaders,
+        });
+
+        console.log("Cleaned up related records for user:", userId);
 
         // Delete user from auth.users using the Admin API
         const deleteResponse = await fetch(
