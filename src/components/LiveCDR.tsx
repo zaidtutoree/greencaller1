@@ -36,7 +36,9 @@ import {
   Search,
   Download,
   RefreshCw,
+  Trash2,
 } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 
@@ -54,12 +56,15 @@ interface CDREntry {
 }
 
 const LiveCDR = () => {
+  const { toast } = useToast();
   const [cdrEntries, setCdrEntries] = useState<CDREntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
   const [directionFilter, setDirectionFilter] = useState<string>("all");
   const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [userFilter, setUserFilter] = useState<string>("all");
+  const [deleting, setDeleting] = useState(false);
 
   const fetchCDR = async () => {
     setLoading(true);
@@ -180,7 +185,9 @@ const LiveCDR = () => {
       (statusFilter === "active" &&
         ["initiated", "ringing", "answered"].includes(entry.status || ""));
 
-    return matchesSearch && matchesDirection && matchesStatus;
+    const matchesUser = userFilter === "all" || entry.user_id === userFilter;
+
+    return matchesSearch && matchesDirection && matchesStatus && matchesUser;
   });
 
   const recentEntries = filteredEntries.slice(0, 5);
@@ -232,6 +239,48 @@ const LiveCDR = () => {
     });
 
     doc.save(`cdr-export-${format(new Date(), "yyyy-MM-dd-HHmmss")}.pdf`);
+  };
+
+  // Get unique users from CDR entries for the user filter
+  const uniqueUsers = Array.from(
+    new Map(
+      cdrEntries
+        .filter(e => e.user_id)
+        .map(e => [e.user_id!, { id: e.user_id!, name: e.user_name || e.user_email || "Unknown" }])
+    ).values()
+  ).sort((a, b) => a.name.localeCompare(b.name));
+
+  const handleDeleteUserCDRs = async () => {
+    if (userFilter === "all") return;
+
+    const userName = uniqueUsers.find(u => u.id === userFilter)?.name || "this user";
+    const count = cdrEntries.filter(e => e.user_id === userFilter).length;
+
+    if (!confirm(`Are you sure you want to delete all ${count} CDR records for ${userName}? This cannot be undone.`)) return;
+
+    setDeleting(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("update-call-status", {
+        body: { action: "delete-user-cdrs", userId: userFilter },
+      });
+
+      if (error) throw error;
+
+      toast({
+        title: "Success",
+        description: `Deleted ${count} CDR records for ${userName}`,
+      });
+      fetchCDR();
+      setUserFilter("all");
+    } catch (err: any) {
+      toast({
+        title: "Error",
+        description: err?.message || "Failed to delete CDRs",
+        variant: "destructive",
+      });
+    } finally {
+      setDeleting(false);
+    }
   };
 
   return (
@@ -342,6 +391,30 @@ const LiveCDR = () => {
                   <SelectItem value="active">Active</SelectItem>
                 </SelectContent>
               </Select>
+              <Select value={userFilter} onValueChange={setUserFilter}>
+                <SelectTrigger className="w-[180px]">
+                  <SelectValue placeholder="Filter by user" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Users</SelectItem>
+                  {uniqueUsers.map((user) => (
+                    <SelectItem key={user.id} value={user.id}>
+                      {user.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {userFilter !== "all" && (
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={handleDeleteUserCDRs}
+                  disabled={deleting}
+                >
+                  <Trash2 className="h-4 w-4 mr-2" />
+                  {deleting ? "Deleting..." : "Delete CDRs"}
+                </Button>
+              )}
               <Button variant="outline" size="icon" onClick={exportToCSV}>
                 <Download className="h-4 w-4" />
               </Button>

@@ -26,6 +26,44 @@ serve(async (req) => {
       'Content-Type': 'application/json',
     };
 
+    // Handle 'delete-user-cdrs' action — DELETE all call_history for a user
+    if (action === 'delete-user-cdrs') {
+      if (!userId) {
+        return new Response(
+          JSON.stringify({ success: false, error: 'userId required' }),
+          { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+
+      // Also delete related recordings
+      await fetch(
+        `${supabaseUrl}/rest/v1/call_recordings?user_id=eq.${encodeURIComponent(userId)}`,
+        { method: 'DELETE', headers }
+      );
+
+      // Delete call history
+      const deleteRes = await fetch(
+        `${supabaseUrl}/rest/v1/call_history?user_id=eq.${encodeURIComponent(userId)}`,
+        { method: 'DELETE', headers: { ...headers, 'Prefer': 'return=representation' } }
+      );
+
+      if (deleteRes.ok) {
+        const deleted = await deleteRes.json();
+        console.log('Deleted CDRs for user:', userId, 'count:', deleted?.length || 0);
+        return new Response(
+          JSON.stringify({ success: true, deleted: deleted?.length || 0 }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      } else {
+        const errText = await deleteRes.text();
+        console.error('Failed to delete CDRs:', errText);
+        return new Response(
+          JSON.stringify({ success: false, error: errText }),
+          { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+    }
+
     // Handle 'create' action — INSERT a new call_history record
     if (action === 'create') {
       const insertData: Record<string, any> = {
