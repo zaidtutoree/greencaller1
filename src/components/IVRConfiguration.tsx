@@ -205,6 +205,32 @@ export const IVRConfiguration = () => {
     }
   };
 
+  const handleDeleteIVRConfig = async (configId: string, companyName: string) => {
+    if (!confirm(`Are you sure you want to delete the IVR configuration for "${companyName}"?`)) return;
+
+    const token = localStorage.getItem("admin_session_token");
+    if (!token) {
+      toast({ title: "Error", description: "Admin session not found", variant: "destructive" });
+      return;
+    }
+
+    try {
+      const { data, error } = await supabase.functions.invoke("admin-ivr", {
+        body: { action: "delete", configId },
+        headers: { "x-admin-token": token },
+      });
+
+      if (error || !data?.success) {
+        throw new Error(data?.error || error?.message || "Failed to delete IVR config");
+      }
+
+      toast({ title: "Success", description: `IVR configuration for "${companyName}" deleted` });
+      fetchAllIVRConfigs();
+    } catch (err: any) {
+      toast({ title: "Error", description: err?.message || "Failed to delete", variant: "destructive" });
+    }
+  };
+
   const fetchDepartments = async (companyName: string) => {
     // Clear existing departments first to avoid showing wrong company's departments
     setDepartments([]);
@@ -484,12 +510,14 @@ export const IVRConfiguration = () => {
               <Label className="text-sm font-medium">Saved Configurations</Label>
               <div className="space-y-2">
                 {savedConfigs.map((cfg) => (
-                  <button
+                  <div
                     key={cfg.id}
-                    onClick={() => openConfigDetails(cfg)}
-                    className="w-full flex items-center justify-between p-3 rounded-lg border bg-card hover:bg-accent/50 transition-colors text-left"
+                    className="w-full flex items-center justify-between p-3 rounded-lg border bg-card hover:bg-accent/50 transition-colors"
                   >
-                    <div className="flex items-center gap-3">
+                    <button
+                      onClick={() => openConfigDetails(cfg)}
+                      className="flex items-center gap-3 flex-1 text-left"
+                    >
                       <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center">
                         <Building2 className="w-5 h-5 text-primary" />
                       </div>
@@ -507,9 +535,22 @@ export const IVRConfiguration = () => {
                           </Badge>
                         </div>
                       </div>
+                    </button>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="text-destructive hover:text-destructive"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeleteIVRConfig(cfg.id, cfg.company_name);
+                        }}
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </Button>
+                      <ChevronRight className="w-5 h-5 text-muted-foreground" />
                     </div>
-                    <ChevronRight className="w-5 h-5 text-muted-foreground" />
-                  </button>
+                  </div>
                 ))}
               </div>
             </div>

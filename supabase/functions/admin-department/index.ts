@@ -220,6 +220,28 @@ serve(async (req) => {
         );
       }
 
+      case "delete": {
+        if (!departmentId) {
+          return new Response(
+            JSON.stringify({ error: "Department ID is required" }),
+            { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+
+        // Delete members first
+        await supabaseQuery(`department_members?department_id=eq.${departmentId}`, "DELETE");
+        // Delete call queue entries
+        await supabaseQuery(`call_queue?department_id=eq.${departmentId}`, "DELETE");
+        // Unassign phone number (set phone_number_id to null on the department won't matter since we're deleting)
+        // Delete the department
+        await supabaseQuery(`departments?id=eq.${departmentId}`, "DELETE");
+
+        return new Response(
+          JSON.stringify({ success: true }),
+          { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
       default:
         return new Response(
           JSON.stringify({ error: "Invalid action" }),

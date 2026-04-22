@@ -25,7 +25,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Building2, PhoneIcon, Plus, Users, UserPlus, UserMinus } from "lucide-react";
+import { Building2, PhoneIcon, Plus, Users, UserPlus, UserMinus, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
@@ -320,6 +320,32 @@ const DepartmentManagement = () => {
     }
   };
 
+  const handleDeleteDepartment = async (departmentId: string, departmentName: string) => {
+    if (!confirm(`Are you sure you want to delete "${departmentName}"? This will remove all members and queue entries.`)) return;
+
+    const token = localStorage.getItem("admin_session_token");
+    if (!token) {
+      toast({ title: "Error", description: "Admin session not found", variant: "destructive" });
+      return;
+    }
+
+    try {
+      const { data, error } = await supabase.functions.invoke("admin-department", {
+        body: { action: "delete", departmentId },
+        headers: { "x-admin-token": token },
+      });
+
+      if (error || !data?.success) {
+        throw new Error(data?.error || error?.message || "Failed to delete department");
+      }
+
+      toast({ title: "Success", description: `Department "${departmentName}" deleted` });
+      fetchDepartments();
+    } catch (err: any) {
+      toast({ title: "Error", description: err?.message || "Failed to delete department", variant: "destructive" });
+    }
+  };
+
   const getPhoneNumber = (phoneNumberId: string | null) => {
     if (!phoneNumberId) return "Not assigned";
     const phone = phoneNumbers.find((p) => p.id === phoneNumberId);
@@ -497,27 +523,37 @@ const DepartmentManagement = () => {
                       {new Date(department.created_at).toLocaleDateString()}
                     </TableCell>
                     <TableCell className="text-right">
-                      <Select
-                        value={department.phone_number_id || "unassigned"}
-                        onValueChange={(value) =>
-                          handleAssignPhone(
-                            department.id,
-                            value === "unassigned" ? null : value
-                          )
-                        }
-                      >
-                        <SelectTrigger className="w-40">
-                          <SelectValue placeholder="Assign phone" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="unassigned">Unassigned</SelectItem>
-                          {getAvailablePhones(department.phone_number_id).map((phone) => (
-                            <SelectItem key={phone.id} value={phone.id}>
-                              {phone.phone_number}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                      <div className="flex items-center justify-end gap-2">
+                        <Select
+                          value={department.phone_number_id || "unassigned"}
+                          onValueChange={(value) =>
+                            handleAssignPhone(
+                              department.id,
+                              value === "unassigned" ? null : value
+                            )
+                          }
+                        >
+                          <SelectTrigger className="w-40">
+                            <SelectValue placeholder="Assign phone" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="unassigned">Unassigned</SelectItem>
+                            {getAvailablePhones(department.phone_number_id).map((phone) => (
+                              <SelectItem key={phone.id} value={phone.id}>
+                                {phone.phone_number}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="text-destructive hover:text-destructive"
+                          onClick={() => handleDeleteDepartment(department.id, department.name)}
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </Button>
+                      </div>
                     </TableCell>
                   </TableRow>
                 );
