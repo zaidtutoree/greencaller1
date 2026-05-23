@@ -681,7 +681,7 @@ export const useTelnyxCall = ({ userId, assignedNumber, enabled = true }: UseTel
               console.log("Blocking re-detection of recently declined caller:", callerNumber, "call.id:", call.id);
               // Also hangup this new SIP invite so the platform stops retrying
               try { call.hangup({ cause: "USER_BUSY", causeCode: 17, sipCode: 486 }); } catch {}
-            } else if ((isInboundByDirection || isLikelyInbound) && !incomingCallRef.current && !isAlreadyActiveCall && !declinedCallIdsRef.current.has(call.id)) {
+            } else if ((isInboundByDirection || isLikelyInbound) && !incomingCallRef.current && !isAlreadyActiveCall && !declinedCallIdsRef.current.has(call.id) && !["hangup", "destroy", "purge", "ended", "terminated", "completed", "failed", "disconnected"].includes(callState)) {
               console.log("Incoming Telnyx call detected:", callerNumber, "direction:", callDirection, "state:", callState);
 
               // Store reference to prevent duplicate detection
@@ -749,13 +749,14 @@ export const useTelnyxCall = ({ userId, assignedNumber, enabled = true }: UseTel
                   });
               }
 
-              // Match by id when present; if the SDK omits id on a terminal
-              // event but we have a single active call, treat it as that call.
-              const matchesActive =
-                activeCallRef.current && (
-                  !call?.id || activeCallRef.current.id === call.id
-                );
-              if (matchesActive) {
+              // End the user's call session on ANY terminal event when the
+              // UI shows an active call. Telnyx can split the SDK call object
+              // across the original outbound leg and the bridged-back inbound
+              // leg — id-based matching misses the terminal event on the
+              // bridge leg, leaving the call screen stuck. This app maintains
+              // a single active call at a time, so any terminal event from
+              // the SDK should end the session.
+              if (callStateRef?.current?.isActive || activeCallRef.current) {
                 resetCallState();
               }
               // Clear incoming call ref and state if it was this call
