@@ -716,8 +716,23 @@ export const useTelnyxCall = ({ userId, assignedNumber, enabled = true }: UseTel
               }
             }
 
-            if (callState === "hangup" || callState === "destroy") {
-              console.log("Telnyx call ended — state:", callState, "cause:", call.cause, "causeCode:", call.causeCode, "sipCode:", call.sipCode, "id:", call.id, "direction:", call.direction);
+            // Treat any non-live state as terminal. The Telnyx web SDK can
+            // emit "purge"/"ended"/"failed"/"disconnected" in addition to
+            // "hangup"/"destroy" depending on how the leg ends; matching only
+            // hangup/destroy left the caller-side UI stuck in an active-call
+            // view when the callee hung up.
+            const terminalStates = new Set([
+              "hangup",
+              "destroy",
+              "purge",
+              "ended",
+              "terminated",
+              "completed",
+              "failed",
+              "disconnected",
+            ]);
+            if (terminalStates.has(callState)) {
+              console.log("Telnyx call ended — state:", callState, "cause:", call.cause, "causeCode:", call.causeCode, "sipCode:", call.sipCode, "id:", call.id, "direction:", call.direction, "activeRefId:", activeCallRef.current?.id);
 
               // Immediately clean up call_queue when an incoming call hangs up before being answered
               // This handles the case where the caller disconnects before pickup
@@ -734,7 +749,13 @@ export const useTelnyxCall = ({ userId, assignedNumber, enabled = true }: UseTel
                   });
               }
 
-              if (activeCallRef.current?.id === call.id) {
+              // Match by id when present; if the SDK omits id on a terminal
+              // event but we have a single active call, treat it as that call.
+              const matchesActive =
+                activeCallRef.current && (
+                  !call?.id || activeCallRef.current.id === call.id
+                );
+              if (matchesActive) {
                 resetCallState();
               }
               // Clear incoming call ref and state if it was this call
