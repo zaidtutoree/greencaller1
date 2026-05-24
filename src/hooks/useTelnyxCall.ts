@@ -958,10 +958,13 @@ export const useTelnyxCall = ({ userId, assignedNumber, enabled = true }: UseTel
 
         console.log("Making direct WebRTC call to:", formattedNumber);
 
-        // Fire-and-forget: ensure credential connection has outbound voice profile
-        supabase.functions.invoke("telnyx-make-call", {
-          body: { toNumber: formattedNumber, fromNumber: assignedNumber, userId, record, setupOnly: true },
-        }).catch((e: any) => console.warn("Setup-only call failed (non-critical):", e));
+        // IMPORTANT: do NOT invoke `telnyx-make-call` here. The deployed
+        // function ignores the `setupOnly` flag and actually places a second
+        // PSTN call with client_state.action = 'bridge_to_webrtc' — which
+        // makes telnyx-call-events INVITE our own SIP user back, and the
+        // web SDK then sees an unsolicited inbound call from our own
+        // number (the "calling itself" loop). The SDK-direct newCall()
+        // below is the only call we need.
 
         // Set outbound flag BEFORE placing the call so notification handler knows
         makingOutboundRef.current = true;
