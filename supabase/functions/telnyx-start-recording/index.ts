@@ -347,6 +347,18 @@ serve(async (req) => {
       channels: 'dual',
     };
 
+    // Embed the recorder's user_id in client_state so call.recording.saved can
+    // attribute the recording to the user who pressed Record (not whichever
+    // call_history row happens to match the v3: call_sid). Telnyx round-trips
+    // client_state base64-encoded.
+    if (userId) {
+      try {
+        requestBody.client_state = btoa(JSON.stringify({ recorderUserId: userId }));
+      } catch (e) {
+        console.log('Failed to encode client_state:', e);
+      }
+    }
+
     // For inbound/TeXML calls, specify the callback URL explicitly
     if (supabaseUrl) {
       requestBody.status_callback_url = `${supabaseUrl}/functions/v1/telnyx-call-events`;

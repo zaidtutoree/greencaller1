@@ -537,7 +537,58 @@ serve(async (req) => {
           let direction = callData?.direction || 'inbound';
           let fromNumber = callData?.from_number || payloadFrom || 'unknown';
           let toNumber = callData?.to_number || payloadTo || 'unknown';
-          let userId = callData?.user_id || null;
+
+          // Prefer the user_id stashed in client_state by telnyx-start-recording
+          // — that's the user who actually pressed Record. Falling back to
+          // callData.user_id would attribute the recording to whichever
+          // call_history row's call_sid matched first, which on internal calls
+          // is the inbound (receiver's) leg, not the recorder.
+          let recorderUserId: string | null = null;
+          const clientState = payload?.client_state;
+          if (clientState) {
+            try {
+              const decoded = JSON.parse(atob(clientState));
+              if (decoded && typeof decoded.recorderUserId === 'string') {
+                recorderUserId = decoded.recorderUserId;
+                console.log('Decoded recorderUserId from client_state:', recorderUserId);
+              }
+            } catch (e) {
+              console.log('Failed to decode client_state:', e);
+            }
+          }
+          let userId = recorderUserId || callData?.user_id || null;
+
+          // Second attribution path: if client_state didn't carry a recorder
+          // user_id (e.g. Telnyx stripped it for this call type), and the
+          // matched call_history row is the inbound (receiver) leg, look up
+          // the matching outbound row by from/to + recent created_at and
+          // prefer its user_id — that row belongs to whoever placed the call,
+          // which on internal account-to-account calls is the recorder.
+          if (!recorderUserId && callData?.direction === 'inbound' && (payloadFrom || payloadTo)) {
+            try {
+              const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+              const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+              const normalize = (n: string | undefined) => (n || '').replace(/\D/g, '').slice(-9);
+              const fromDigits = normalize(payloadFrom);
+              const toDigits = normalize(payloadTo);
+              if (fromDigits && toDigits) {
+                const outUrl = `${supabaseUrl}/rest/v1/call_history?direction=eq.outbound&created_at=gte.${encodeURIComponent(tenMinAgo)}&order=created_at.desc&limit=20&select=user_id,from_number,to_number`;
+                const outRes = await fetch(outUrl, { headers: supabaseHeaders() });
+                if (outRes.ok) {
+                  const outRows = await outRes.json();
+                  for (const row of outRows || []) {
+                    if (normalize(row.from_number) === fromDigits && normalize(row.to_number) === toDigits && row.user_id) {
+                      userId = row.user_id;
+                      console.log('Attributed recording to outbound row user_id:', userId);
+                      break;
+                    }
+                  }
+                }
+              }
+            } catch (e) {
+              console.log('Outbound-row attribution lookup failed:', e);
+            }
+          }
 
           // If we still don't have user_id, try to find by phone number
           if (!userId && (payloadFrom || payloadTo)) {
