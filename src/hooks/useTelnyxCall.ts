@@ -303,7 +303,7 @@ export const useTelnyxCall = ({ userId, assignedNumber, enabled = true }: UseTel
         } else {
           console.log("Fetching Telnyx credentials for user:", userId);
           const { data, error } = await supabase.functions.invoke("telnyx-generate-token", {
-            body: { userId, deviceType: "web" },
+            body: { userId },
           });
 
           if (error) {
