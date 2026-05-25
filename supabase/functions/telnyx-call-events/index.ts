@@ -558,13 +558,14 @@ serve(async (req) => {
           }
           let userId = recorderUserId || callData?.user_id || null;
 
-          // Second attribution path: if client_state didn't carry a recorder
-          // user_id (e.g. Telnyx stripped it for this call type), and the
-          // matched call_history row is the inbound (receiver) leg, look up
-          // the matching outbound row by from/to + recent created_at and
-          // prefer its user_id — that row belongs to whoever placed the call,
-          // which on internal account-to-account calls is the recorder.
-          if (!recorderUserId && callData?.direction === 'inbound' && (payloadFrom || payloadTo)) {
+          // Primary attribution path for TeXML calls (which reject
+          // client_state): look up the matching outbound call_history row by
+          // from/to phone digits in the last 10 min and use its user_id.
+          // That row belongs to whoever placed the call — on internal
+          // account-to-account calls, that's the recorder. We override even
+          // callData.user_id here because callData on those calls is the
+          // inbound (receiver) leg, not the recorder.
+          if (!recorderUserId && (payloadFrom || payloadTo)) {
             try {
               const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
               const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
