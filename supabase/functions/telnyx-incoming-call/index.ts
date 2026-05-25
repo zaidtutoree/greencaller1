@@ -775,7 +775,42 @@ async function handleRecordingSaved(payload: any) {
   const fromNumber = callData?.from_number || payloadFrom || 'unknown';
   const toNumber = callData?.to_number || payloadTo || 'unknown';
   const direction = callData?.direction || 'inbound';
-  const userId = callData?.user_id || null;
+  let userId = callData?.user_id || null;
+
+  // Attribute the recording to the user who placed the call (the recorder)
+  // instead of the inbound (receiver) leg. callData on internal account-to-
+  // account calls is the receiver's row, so without this override Mike's
+  // recording would end up under Zaid's user_id and never appear in Mike's
+  // Activity tab. Match outbound rows by trailing 9 digits of from/to within
+  // the last 10 minutes.
+  if (payloadFrom || payloadTo) {
+    try {
+      const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+      const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+      const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+      const normalize = (n: string | undefined) => (n || '').replace(/\D/g, '').slice(-9);
+      const fromDigits = normalize(payloadFrom);
+      const toDigits = normalize(payloadTo);
+      if (fromDigits && toDigits) {
+        const outUrl = `${supabaseUrl}/rest/v1/call_history?direction=eq.outbound&created_at=gte.${encodeURIComponent(tenMinAgo)}&order=created_at.desc&limit=20&select=user_id,from_number,to_number`;
+        const outRes = await fetch(outUrl, {
+          headers: { 'apikey': supabaseKey, 'Authorization': `Bearer ${supabaseKey}` },
+        });
+        if (outRes.ok) {
+          const outRows = await outRes.json();
+          for (const row of outRows || []) {
+            if (normalize(row.from_number) === fromDigits && normalize(row.to_number) === toDigits && row.user_id) {
+              userId = row.user_id;
+              console.log('Attributed recording to outbound row user_id:', userId);
+              break;
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.log('Outbound-row attribution lookup failed:', e);
+    }
+  }
 
   console.log('Inserting recording with:', { callControlId, fromNumber, toNumber, direction, userId });
   const insertResult = await supabaseInsert('call_recordings', {
