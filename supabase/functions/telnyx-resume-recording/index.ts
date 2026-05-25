@@ -23,13 +23,13 @@ serve(async (req) => {
       throw new Error('Telnyx API key not configured');
     }
 
-    const { callId } = await req.json();
+    const { callId, fromNumber, toNumber } = await req.json();
 
     if (!callId) {
       throw new Error('Call ID is required');
     }
 
-    console.log('Resuming recording for call:', callId);
+    console.log('Resuming recording for call:', callId, 'from:', fromNumber, 'to:', toNumber);
 
     const isCallControlId = callId.startsWith('v2:') || callId.startsWith('v3:');
     const isTexmlCallSid = isValidUUID(callId);
@@ -54,24 +54,54 @@ serve(async (req) => {
         }
       } catch {}
 
-      // Fallback: look up PSTN leg from call_history
+      // Fallback: look up the v3: Call Control ID from call_history (same
+      // three-pass strategy as telnyx-pause-recording).
       if (callControlId === callId) {
         try {
           const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
           const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
           const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
-          const searchUrl = `${supabaseUrl}/rest/v1/call_history?direction=eq.outbound&created_at=gte.${encodeURIComponent(fiveMinAgo)}&order=created_at.desc&limit=5&select=call_sid`;
-          const searchRes = await fetch(searchUrl, {
-            headers: { 'apikey': supabaseKey, 'Authorization': `Bearer ${supabaseKey}` },
-          });
+          const headers = { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}` };
+          const normalizeNum = (n: string | undefined) => (n || '').replace(/\D/g, '');
+          const toLast9 = normalizeNum(toNumber).slice(-9);
+          const fromLast9 = normalizeNum(fromNumber).slice(-9);
+          console.log('Resume fallback digits — from:', fromLast9, 'to:', toLast9);
+
+          const searchUrl = `${supabaseUrl}/rest/v1/call_history?created_at=gte.${encodeURIComponent(fiveMinAgo)}&order=created_at.desc&limit=20&select=call_sid,from_number,to_number,direction`;
+          const searchRes = await fetch(searchUrl, { headers });
           if (searchRes.ok) {
             const rows = await searchRes.json();
             if (Array.isArray(rows) && rows.length > 0) {
-              for (const row of rows) {
-                if (row.call_sid && (row.call_sid.startsWith('v2:') || row.call_sid.startsWith('v3:'))) {
-                  callControlId = row.call_sid;
-                  console.log('Found PSTN Call Control ID from DB:', callControlId);
-                  break;
+              if (toLast9) {
+                for (const row of rows) {
+                  if (row.direction !== 'outbound') continue;
+                  if (!row.call_sid || (!row.call_sid.startsWith('v2:') && !row.call_sid.startsWith('v3:'))) continue;
+                  if (normalizeNum(row.to_number).slice(-9) === toLast9) {
+                    callControlId = row.call_sid;
+                    console.log('Found PSTN Call Control ID via outbound match:', callControlId);
+                    break;
+                  }
+                }
+              }
+              if (callControlId === callId && toLast9 && fromLast9) {
+                for (const row of rows) {
+                  if (row.direction !== 'inbound') continue;
+                  if (!row.call_sid || (!row.call_sid.startsWith('v2:') && !row.call_sid.startsWith('v3:'))) continue;
+                  if (normalizeNum(row.to_number).slice(-9) === toLast9 &&
+                      normalizeNum(row.from_number).slice(-9) === fromLast9) {
+                    callControlId = row.call_sid;
+                    console.log('Found PSTN Call Control ID via inbound bridged-leg row:', callControlId);
+                    break;
+                  }
+                }
+              }
+              if (callControlId === callId) {
+                for (const row of rows) {
+                  if (row.call_sid && (row.call_sid.startsWith('v2:') || row.call_sid.startsWith('v3:'))) {
+                    callControlId = row.call_sid;
+                    console.log('Found PSTN Call Control ID (most recent v3:):', callControlId);
+                    break;
+                  }
                 }
               }
             }

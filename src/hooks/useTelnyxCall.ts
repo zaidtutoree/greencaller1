@@ -1257,13 +1257,26 @@ export const useTelnyxCall = ({ userId, assignedNumber, enabled = true }: UseTel
         if (data && !data.success) {
           throw new Error(data.error || "Failed to start recording");
         }
-        console.log('Recording started, call type:', data?.callType);
-        setCallState((prev) => ({ ...prev, isRecording: true, isPaused: false }));
+        console.log('Recording started, call type:', data?.callType, 'callControlId:', data?.callControlId);
+        // Stash the resolved v3: Call Control ID so pause/resume reuse it
+        // (avoids re-running the UUID→v3: lookup, which fails for SDK-direct
+        // outbound calls without from/to context).
+        if (data?.callControlId && (data.callControlId.startsWith('v2:') || data.callControlId.startsWith('v3:'))) {
+          setCallState((prev) => ({
+            ...prev,
+            isRecording: true,
+            isPaused: false,
+            pstnCallControlId: data.callControlId,
+          }));
+        } else {
+          setCallState((prev) => ({ ...prev, isRecording: true, isPaused: false }));
+        }
         toast({ title: "Recording Started" });
       } else if (!callState.isPaused) {
-        // Pause recording
+        // Pause recording — pass the resolved v3: id and from/to numbers so
+        // the function can resolve again if it has to.
         const { error } = await supabase.functions.invoke("telnyx-pause-recording", {
-          body: { callId: recordingCallId },
+          body: { callId: recordingCallId, fromNumber: assignedNumber, toNumber: callState.phoneNumber },
         });
         if (error) throw error;
         setCallState((prev) => ({ ...prev, isPaused: true }));
@@ -1271,7 +1284,7 @@ export const useTelnyxCall = ({ userId, assignedNumber, enabled = true }: UseTel
       } else {
         // Resume recording
         const { error } = await supabase.functions.invoke("telnyx-resume-recording", {
-          body: { callId: recordingCallId },
+          body: { callId: recordingCallId, fromNumber: assignedNumber, toNumber: callState.phoneNumber },
         });
         if (error) throw error;
         setCallState((prev) => ({ ...prev, isPaused: false }));
