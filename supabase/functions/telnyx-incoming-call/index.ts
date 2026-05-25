@@ -253,24 +253,12 @@ async function handleTeXMLIncoming(formData: Record<string, string>) {
       call_sid: callSid,
     });
 
-    // Get the user's freshest SIP credential. NEVER use single: true here —
-    // telnyx_webrtc_registrations has one row per (user_id, device_type),
-    // so a user logged in on both mobile and web has 2 rows and PostgREST's
-    // single-object accept header returns 406 Not Acceptable, which makes
-    // this function falsely think the user has no registration and routes
-    // the call to voicemail. Fetch ordered by updated_at desc and pick the
-    // freshest row.
-    const supabaseUrlForReg = Deno.env.get('SUPABASE_URL')!;
-    const supabaseKeyForReg = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-    const regsUrl = `${supabaseUrlForReg}/rest/v1/telnyx_webrtc_registrations?user_id=eq.${encodeURIComponent(userId)}&select=sip_username,updated_at,expires_at,device_type&order=updated_at.desc&limit=1`;
-    const regsRes = await fetch(regsUrl, {
-      headers: { apikey: supabaseKeyForReg, Authorization: `Bearer ${supabaseKeyForReg}` },
+    // Get the user's SIP credentials with freshness check
+    const { data: regData } = await supabaseQuery('telnyx_webrtc_registrations', {
+      select: 'sip_username,updated_at,expires_at',
+      filters: { user_id: userId },
+      single: true,
     });
-    let regData: any = null;
-    if (regsRes.ok) {
-      const regsRows = await regsRes.json();
-      if (Array.isArray(regsRows) && regsRows.length > 0) regData = regsRows[0];
-    }
 
     if (regData?.sip_username) {
       // Check if registration is fresh (updated within last 3 minutes)
@@ -787,42 +775,7 @@ async function handleRecordingSaved(payload: any) {
   const fromNumber = callData?.from_number || payloadFrom || 'unknown';
   const toNumber = callData?.to_number || payloadTo || 'unknown';
   const direction = callData?.direction || 'inbound';
-  let userId = callData?.user_id || null;
-
-  // Attribute the recording to the user who placed the call (the recorder)
-  // instead of the inbound (receiver) leg. callData on internal account-to-
-  // account calls is the receiver's row, so without this override Mike's
-  // recording would end up under Zaid's user_id and never appear in Mike's
-  // Activity tab. Match outbound rows by trailing 9 digits of from/to within
-  // the last 10 minutes.
-  if (payloadFrom || payloadTo) {
-    try {
-      const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
-      const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-      const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
-      const normalize = (n: string | undefined) => (n || '').replace(/\D/g, '').slice(-9);
-      const fromDigits = normalize(payloadFrom);
-      const toDigits = normalize(payloadTo);
-      if (fromDigits && toDigits) {
-        const outUrl = `${supabaseUrl}/rest/v1/call_history?direction=eq.outbound&created_at=gte.${encodeURIComponent(tenMinAgo)}&order=created_at.desc&limit=20&select=user_id,from_number,to_number`;
-        const outRes = await fetch(outUrl, {
-          headers: { 'apikey': supabaseKey, 'Authorization': `Bearer ${supabaseKey}` },
-        });
-        if (outRes.ok) {
-          const outRows = await outRes.json();
-          for (const row of outRows || []) {
-            if (normalize(row.from_number) === fromDigits && normalize(row.to_number) === toDigits && row.user_id) {
-              userId = row.user_id;
-              console.log('Attributed recording to outbound row user_id:', userId);
-              break;
-            }
-          }
-        }
-      }
-    } catch (e) {
-      console.log('Outbound-row attribution lookup failed:', e);
-    }
-  }
+  const userId = callData?.user_id || null;
 
   console.log('Inserting recording with:', { callControlId, fromNumber, toNumber, direction, userId });
   const insertResult = await supabaseInsert('call_recordings', {
