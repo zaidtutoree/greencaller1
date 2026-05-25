@@ -956,20 +956,21 @@ export const useTelnyxCall = ({ userId, assignedNumber, enabled = true }: UseTel
           formattedNumber = "+" + formattedNumber;
         }
 
-        console.log("Making direct WebRTC call to:", formattedNumber);
+        console.log("Placing outbound call via telnyx-make-call PSTN bridge to:", formattedNumber);
 
-        // Fire-and-forget: ensure the credential connection has an outbound
-        // voice profile configured. The deployed telnyx-make-call now
-        // honours `setupOnly: true` and returns early without placing a
-        // PSTN call — so this no longer triggers the bridge-back loop that
-        // used to make the web see an inbound call from its own number.
-        // Without this setup step, outbound INVITEs from this credential
-        // connection are rejected by Telnyx with no D38 error visible.
-        supabase.functions.invoke("telnyx-make-call", {
-          body: { toNumber: formattedNumber, fromNumber: assignedNumber, userId, record, setupOnly: true },
-        }).catch((e: any) => console.warn("Setup-only call failed (non-critical):", e));
-
-        // Set outbound flag BEFORE placing the call so notification handler knows
+        // Use the server-side PSTN-bridge flow:
+        //  1. telnyx-make-call places a real Call Control outbound PSTN leg
+        //     against the destination number.
+        //  2. When the destination answers, telnyx-call-events bridges that
+        //     PSTN leg back to this web client's SIP user via the
+        //     `bridge_to_webrtc` client_state.
+        //  3. Our SDK then receives an inbound INVITE that the bridge-by-ref
+        //     handler below auto-answers.
+        // The previous direct `client.newCall()` path did not trigger the
+        // destination DID's TeXML voice_url for internal account-to-account
+        // numbers, which caused Telnyx to terminate the call before any leg
+        // reached the callee (sipCode 200 + NORMAL_CLEARING + duration 0).
+        awaitingBridgeRef.current = { toNumber: formattedNumber, fromNumber: assignedNumber };
         makingOutboundRef.current = true;
 
         setCallState((prev) => ({
@@ -984,46 +985,22 @@ export const useTelnyxCall = ({ userId, assignedNumber, enabled = true }: UseTel
           description: `Calling ${toNumber} from ${assignedNumber}`,
         });
 
-        // Place the call directly via WebRTC SDK — no webhooks needed
-        const call = clientRef.current!.newCall({
-          destinationNumber: formattedNumber,
-          callerNumber: assignedNumber,
-          audio: true,
-          video: false,
-        });
-
-        console.log("WebRTC SDK call placed:", call.id);
-
-        // Track this call ID so it doesn't show as incoming
-        if (call.id) outboundCallIdsRef.current.add(call.id);
-        activeCallRef.current = call;
+        try {
+          const { data, error } = await supabase.functions.invoke("telnyx-make-call", {
+            body: { toNumber: formattedNumber, fromNumber: assignedNumber, userId, record },
+          });
+          if (error) throw error;
+          console.log("telnyx-make-call response:", data);
+          // Store the PSTN call control id so toggleRecording etc. can target it
+          if (data?.callControlId) {
+            setCallState((prev) => ({ ...prev, pstnCallControlId: data.callControlId }));
+          }
+        } catch (e: any) {
+          awaitingBridgeRef.current = null;
+          makingOutboundRef.current = false;
+          throw e;
+        }
         makingOutboundRef.current = false;
-
-        setCallState((prev) => ({
-          ...prev,
-          callId: call.id,
-        }));
-
-        // Log call to history via edge function
-        supabase.functions.invoke("update-call-status", {
-          body: {
-            action: 'create',
-            userId,
-            fromNumber: assignedNumber,
-            toNumber: formattedNumber,
-            direction: 'outbound',
-            status: 'initiated',
-            callSid: call.id,
-          },
-        }).then(({ data, error }) => {
-          if (error) console.error("CALL HISTORY CREATE ERROR:", error);
-          else console.log("CALL HISTORY CREATE SUCCESS:", data);
-        }).catch((e: any) => console.error("CALL HISTORY CREATE EXCEPTION:", e));
-
-        toast({
-          title: "Call initiated",
-          description: `Calling ${toNumber} - connecting...`,
-        });
       } catch (error: any) {
         console.error("Error making Telnyx call:", error);
         makingOutboundRef.current = false;
