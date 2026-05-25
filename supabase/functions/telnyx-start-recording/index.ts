@@ -218,6 +218,32 @@ serve(async (req) => {
                 }
               }
 
+              // Pass 3: look for INBOUND v3: rows matching the call's
+              // from/to numbers. For SDK-direct outbound calls from web,
+              // there is NO outbound v3: row — Telnyx assigns the Call
+              // Control ID server-side when the call routes through the
+              // destination DID's inbound webhook. handleTeXMLIncoming
+              // inserts a row with direction='inbound', user_id=receiver,
+              // and call_sid=v3:..., which is the bridged-leg's ID we can
+              // use for recording (Telnyx records both sides of a bridge).
+              if (!found) {
+                const fromDigits = normalizeNum(fromNumber);
+                const fromLast9 = fromDigits.slice(-9);
+                for (const row of rows) {
+                  if (row.direction !== 'inbound') continue;
+                  const sidMatches = row.call_sid && (row.call_sid.startsWith('v2:') || row.call_sid.startsWith('v3:'));
+                  if (!sidMatches) continue;
+                  const rowToLast9 = normalizeNum(row.to_number).slice(-9);
+                  const rowFromLast9 = normalizeNum(row.from_number).slice(-9);
+                  if (rowToLast9 === targetLast9 && rowFromLast9 === fromLast9) {
+                    callControlId = row.call_sid;
+                    console.log('Found PSTN Call Control ID via inbound bridged-leg row:', callControlId);
+                    found = true;
+                    break;
+                  }
+                }
+              }
+
               if (!found) {
                 console.log('No matching v3: call_sid found. Target digits:', targetLast9);
                 console.log('All rows:', JSON.stringify(rows, null, 2));
