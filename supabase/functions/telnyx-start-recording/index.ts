@@ -305,6 +305,38 @@ serve(async (req) => {
     console.log('Using Call Control API for recording with ID:', callControlId);
     console.log('Original callId was TeXML:', isTexmlCallSid, 'Call Control:', isCallControlId);
 
+    // Verify the resolved Call Control ID is still active before trying to
+    // record on it. Without this, when a stale v3: from an already-ended call
+    // gets picked up (e.g. via /v2/calls/{uuid} lookup, or via a call_history
+    // row that's no longer live), Telnyx rejects with 90018 "Call has already
+    // ended". Surface that as a clean, recoverable error instead.
+    if (callControlId && (callControlId.startsWith('v2:') || callControlId.startsWith('v3:'))) {
+      try {
+        const aliveResp = await fetch(`https://api.telnyx.com/v2/calls/${callControlId}`, {
+          headers: { 'Authorization': `Bearer ${telnyxApiKey}` },
+        });
+        if (aliveResp.ok) {
+          const aliveData = await aliveResp.json();
+          const isAlive = aliveData?.data?.is_alive;
+          console.log('Call liveness check:', { callControlId, isAlive });
+          if (isAlive === false) {
+            return new Response(
+              JSON.stringify({
+                success: false,
+                error: 'Call has already ended — start a new call before recording',
+                callEnded: true,
+              }),
+              { status: 409, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+            );
+          }
+        } else {
+          console.log('Liveness check HTTP error:', aliveResp.status, await aliveResp.text());
+        }
+      } catch (e) {
+        console.log('Liveness check failed (continuing):', e);
+      }
+    }
+
     const apiUrl = `https://api.telnyx.com/v2/calls/${callControlId}/actions/record_start`;
     const supabaseUrl = Deno.env.get('SUPABASE_URL');
 

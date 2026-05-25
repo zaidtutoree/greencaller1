@@ -112,6 +112,33 @@ serve(async (req) => {
       }
     }
 
+    // Verify the call is still active before trying to resume; otherwise
+    // Telnyx returns 90018 "Call has already ended".
+    if (callControlId && (callControlId.startsWith('v2:') || callControlId.startsWith('v3:'))) {
+      try {
+        const aliveResp = await fetch(`https://api.telnyx.com/v2/calls/${callControlId}`, {
+          headers: { 'Authorization': `Bearer ${telnyxApiKey}` },
+        });
+        if (aliveResp.ok) {
+          const aliveData = await aliveResp.json();
+          const isAlive = aliveData?.data?.is_alive;
+          console.log('Resume liveness check:', { callControlId, isAlive });
+          if (isAlive === false) {
+            return new Response(
+              JSON.stringify({
+                success: false,
+                error: 'Call has already ended — cannot resume recording',
+                callEnded: true,
+              }),
+              { status: 409, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+            );
+          }
+        }
+      } catch (e) {
+        console.log('Liveness check failed (continuing):', e);
+      }
+    }
+
     // Use Call Control API
     const apiUrl = `https://api.telnyx.com/v2/calls/${callControlId}/actions/record_resume`;
 
