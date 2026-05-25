@@ -21,7 +21,7 @@ serve(async (req) => {
     }
 
     // Safely parse JSON body - handle empty or malformed requests
-    let body: { userId?: string } = {};
+    let body: { userId?: string; deviceType?: string } = {};
     try {
       const text = await req.text();
       if (text && text.trim()) {
@@ -30,9 +30,9 @@ serve(async (req) => {
     } catch (parseError) {
       console.error("Failed to parse request body:", parseError);
       return new Response(
-        JSON.stringify({ 
-          success: false, 
-          error: "Invalid JSON body. Expected: { \"userId\": \"your-user-id\" }" 
+        JSON.stringify({
+          success: false,
+          error: "Invalid JSON body. Expected: { \"userId\": \"your-user-id\", \"deviceType\": \"web\" | \"mobile\" }"
         }),
         {
           status: 400,
@@ -42,15 +42,19 @@ serve(async (req) => {
     }
 
     const userId = body.userId;
+    // device_type defaults to 'web' to preserve existing web-app behaviour.
+    // Mobile clients pass 'mobile' so the app gets a per-user mobile SIP
+    // credential instead of the legacy shared TELNYX_SIP_USERNAME env var.
+    const deviceType = body.deviceType === "mobile" ? "mobile" : "web";
 
-    console.log("Generating Telnyx SIP credentials for user:", userId);
+    console.log("Generating Telnyx SIP credentials for user:", userId, "deviceType:", deviceType);
 
     if (!userId) {
       return new Response(
-        JSON.stringify({ 
-          success: false, 
-          error: "Missing userId. Expected: { \"userId\": \"your-user-id\" }" 
-        }), 
+        JSON.stringify({
+          success: false,
+          error: "Missing userId. Expected: { \"userId\": \"your-user-id\", \"deviceType\": \"web\" | \"mobile\" }"
+        }),
         {
           status: 400,
           headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -65,23 +69,58 @@ serve(async (req) => {
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    const storeRegistration = async (sipUsername: string, credentialConnectionId: string | null) => {
+    // Fetch the existing row so we can DELETE the previous Telnyx credential
+    // when we mint a new one (prevents the 1665-orphan accumulation we hit
+    // before). We do NOT trust this row as a cache — multiple times we've
+    // seen the row stay valid in the DB while the actual Telnyx credential
+    // is gone (deleted by another path, by bulk cleanup, by Telnyx side),
+    // and the app then fails SIP login with "Login failed. Please check
+    // your credentials". Always minting fresh + deleting the previous is
+    // the only reliable behaviour given how often the user-switch flow
+    // exercises this code path. Cost: ~1s extra per app init — acceptable
+    // for a calling app, and we still avoid accumulation because every
+    // mint here is paired with a delete of the previous credential below.
+    const { data: existing } = await supabase
+      .from("telnyx_webrtc_registrations")
+      .select("sip_username, sip_password, expires_at, telnyx_credential_id")
+      .eq("user_id", userId)
+      .eq("device_type", deviceType)
+      .maybeSingle();
+
+    console.log("Always-mint mode — existing row:", existing ? {
+      sipUsername: existing.sip_username?.substring(0, 12) + "...",
+      hasPassword: !!existing.sip_password,
+      telnyxCredentialId: existing.telnyx_credential_id,
+      expiresAt: existing.expires_at,
+    } : "none");
+
+    const storeRegistration = async (
+      sipUsername: string,
+      sipPassword: string,
+      telnyxCredentialId: string | null,
+    ) => {
+      // Keyed by (user_id, device_type) so a single user can have one row
+      // for web and a separate row for mobile. The 20260508 migration adds
+      // the device_type column and the (user_id, device_type) unique key
+      // that this onConflict targets.
       const { error: regError } = await supabase
         .from("telnyx_webrtc_registrations")
         .upsert(
           {
             user_id: userId,
+            device_type: deviceType,
             sip_username: sipUsername,
+            sip_password: sipPassword,
             expires_at: expiresAtISO,
-            ...(credentialConnectionId ? { credential_connection_id: credentialConnectionId } : {}),
+            telnyx_credential_id: telnyxCredentialId,
           },
-          { onConflict: "user_id" },
+          { onConflict: "user_id,device_type" },
         );
 
       if (regError) {
         console.error("Error storing SIP registration:", regError);
       } else {
-        console.log("Stored SIP registration for user:", userId, sipUsername, "credentialConnectionId:", credentialConnectionId);
+        console.log("Stored SIP registration for user:", userId, deviceType, sipUsername);
       }
     };
 
@@ -278,8 +317,8 @@ serve(async (req) => {
     }
 
     // Step 3: Create short-lived telephony credentials for this user
-    const credName = `lovable-user-${userId}-${Date.now()}`;
-    console.log("Creating Telnyx telephony credential", { userId, connectionId, expiresAt: expiresAtISO });
+    const credName = `gca-${deviceType}-${userId}-${Date.now()}`;
+    console.log("Creating Telnyx telephony credential", { userId, deviceType, connectionId, expiresAt: expiresAtISO });
 
     const createCred = await telnyxFetchJson("https://api.telnyx.com/v2/telephony_credentials", {
       method: "POST",
@@ -302,13 +341,32 @@ serve(async (req) => {
     const credData = createCred.json;
     const sipUsername = credData?.data?.sip_username;
     const sipPassword = credData?.data?.sip_password;
+    const telnyxCredentialId = credData?.data?.id ?? null;
 
     if (!sipUsername || !sipPassword) {
       console.error("Telnyx credential response missing username/password", credData);
       throw new Error("Failed to obtain Telnyx credentials");
     }
 
-    await storeRegistration(sipUsername, connectionId);
+    // Delete the previous Telnyx credential resource, if we have its id.
+    // Without this we'd orphan a credential on Telnyx every time we mint
+    // a fresh one — that's how the connection ballooned to 1665 expired
+    // credentials and started failing SIP logins.
+    if (existing?.telnyx_credential_id) {
+      console.log("Deleting previous Telnyx credential:", existing.telnyx_credential_id);
+      const del = await telnyxFetchJson(
+        `https://api.telnyx.com/v2/telephony_credentials/${existing.telnyx_credential_id}`,
+        {
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${telnyxApiKey}` },
+        },
+      );
+      if (!del.ok) {
+        console.warn("Failed to delete previous Telnyx credential (continuing):", del.status, del.text);
+      }
+    }
+
+    await storeRegistration(sipUsername, sipPassword, telnyxCredentialId);
 
     return new Response(
       JSON.stringify({
@@ -316,8 +374,10 @@ serve(async (req) => {
         sipUsername,
         sipPassword,
         authType: "credentials",
+        deviceType,
         expiresAt: expiresAtISO,
         connectionId,
+        cached: false,
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } },
     );
