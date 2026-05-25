@@ -817,14 +817,21 @@ async function handleRecordingSaved(payload: any) {
   // digits of from/to within the last 10 minutes.
   // SAFE: this only runs inside handleRecordingSaved which is gated by
   // eventType === 'call.recording.saved'. It cannot affect call setup.
-  if (payloadFrom || payloadTo) {
+  // IMPORTANT: Telnyx's call.recording.saved payload does NOT include
+  // from/to — only payload.call_control_id, recording_id, recording_urls
+  // etc. So we use callData (the inbound row) for the phone numbers,
+  // falling back to payload values if for some reason callData is missing.
+  const matchFrom = callData?.from_number || payloadFrom;
+  const matchTo = callData?.to_number || payloadTo;
+  if (matchFrom || matchTo) {
     try {
       const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
       const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
       const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
       const normalize = (n: string | undefined) => (n || '').replace(/\D/g, '').slice(-9);
-      const fromDigits = normalize(payloadFrom);
-      const toDigits = normalize(payloadTo);
+      const fromDigits = normalize(matchFrom);
+      const toDigits = normalize(matchTo);
+      console.log('Recording attribution lookup digits:', { fromDigits, toDigits });
       if (fromDigits && toDigits) {
         const outUrl = `${supabaseUrl}/rest/v1/call_history?direction=eq.outbound&created_at=gte.${encodeURIComponent(tenMinAgo)}&order=created_at.desc&limit=20&select=user_id,from_number,to_number`;
         const outRes = await fetch(outUrl, {

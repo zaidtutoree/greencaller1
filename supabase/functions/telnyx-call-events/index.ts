@@ -565,13 +565,19 @@ serve(async (req) => {
           // account-to-account calls, that's the recorder. We override even
           // callData.user_id here because callData on those calls is the
           // inbound (receiver) leg, not the recorder.
-          if (!recorderUserId && (payloadFrom || payloadTo)) {
+          // Telnyx's call.recording.saved payload does NOT include from/to,
+          // so payloadFrom/payloadTo are usually undefined. Fall back to
+          // callData's stored numbers for the attribution lookup.
+          const matchFrom = callData?.from_number || payloadFrom;
+          const matchTo = callData?.to_number || payloadTo;
+          if (!recorderUserId && (matchFrom || matchTo)) {
             try {
               const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
               const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
               const normalize = (n: string | undefined) => (n || '').replace(/\D/g, '').slice(-9);
-              const fromDigits = normalize(payloadFrom);
-              const toDigits = normalize(payloadTo);
+              const fromDigits = normalize(matchFrom);
+              const toDigits = normalize(matchTo);
+              console.log('Recording attribution lookup digits:', { fromDigits, toDigits });
               if (fromDigits && toDigits) {
                 const outUrl = `${supabaseUrl}/rest/v1/call_history?direction=eq.outbound&created_at=gte.${encodeURIComponent(tenMinAgo)}&order=created_at.desc&limit=20&select=user_id,from_number,to_number`;
                 const outRes = await fetch(outUrl, { headers: supabaseHeaders() });
