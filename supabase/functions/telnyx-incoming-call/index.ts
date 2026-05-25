@@ -269,29 +269,44 @@ async function handleTeXMLIncoming(formData: Record<string, string>) {
       call_sid: callSid,
     });
 
-    // Get the user's SIP credentials with freshness check
-    const { data: regData } = await supabaseQuery('telnyx_webrtc_registrations', {
-      select: 'sip_username,updated_at,expires_at',
-      filters: { user_id: userId },
-      single: true,
+    // Get the user's freshest SIP credential. NEVER use single: true here —
+    // telnyx_webrtc_registrations is keyed by (user_id, device_type), so a
+    // user logged in on both mobile and web has 2 rows and PostgREST's
+    // single-object accept header returns 406 Not Acceptable. We pick the
+    // row with the most recent updated_at — that's whichever device most
+    // recently re-registered, i.e. the one most likely to actually receive
+    // the SIP INVITE.
+    // See .claude/INTERNAL_CALL_ROUTING_FIXES_2026_05_24.md §2.2.
+    const supabaseUrlForReg = Deno.env.get('SUPABASE_URL')!;
+    const supabaseKeyForReg = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+    const regsUrl = `${supabaseUrlForReg}/rest/v1/telnyx_webrtc_registrations?user_id=eq.${encodeURIComponent(userId)}&select=sip_username,updated_at,expires_at,device_type&order=updated_at.desc&limit=1`;
+    const regsRes = await fetch(regsUrl, {
+      headers: { apikey: supabaseKeyForReg, Authorization: `Bearer ${supabaseKeyForReg}` },
     });
+    let regData: any = null;
+    if (regsRes.ok) {
+      const regsRows = await regsRes.json();
+      if (Array.isArray(regsRows) && regsRows.length > 0) regData = regsRows[0];
+    }
 
     if (regData?.sip_username) {
-      // Check if registration is fresh (updated within last 3 minutes)
-      // This prevents dialing stale registrations where the WebRTC client has disconnected
-      const updatedAt = regData.updated_at ? new Date(regData.updated_at).getTime() : 0;
+      // Staleness is determined ONLY by expires_at, NOT by an updated_at
+      // cutoff. The previous 3-minute updated_at check sent active
+      // registrations to voicemail whenever the WebRTC SDK didn't ping its
+      // row recently (it doesn't have to — the SIP layer keeps the SIP
+      // Contact alive independently of our DB row). Per
+      // .claude/INTERNAL_CALL_ROUTING_FIXES_2026_05_24.md §1, the only
+      // reliable signal is the credential's expires_at.
       const now = Date.now();
-      const secondsSinceUpdate = (now - updatedAt) / 1000;
       const expiresAt = regData.expires_at ? new Date(regData.expires_at).getTime() : 0;
-      const isExpired = expiresAt && expiresAt < now;
-
-      // Consider registration stale if not updated in 3 minutes or if expired
-      const isStale = secondsSinceUpdate > 180 || isExpired;
+      const isExpired = !!(expiresAt && expiresAt < now);
+      const isStale = isExpired;
 
       console.log('Registration check:', {
         userId,
         sipUsername: regData.sip_username,
-        secondsSinceUpdate: Math.round(secondsSinceUpdate),
+        deviceType: regData.device_type,
+        expiresAt: regData.expires_at,
         isExpired,
         isStale,
       });
