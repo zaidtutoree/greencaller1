@@ -134,9 +134,25 @@ serve(async (req) => {
         return await handleTeXMLRecording(formObj);
       }
 
-      // Check for call status callback (TeXML format)
-      // These have CallStatus field indicating the call state
-      if (formObj.CallStatus && formObj.CallSid) {
+      // Status-callback branch must be gated on a TERMINAL CallStatus value.
+      // Telnyx sends CallStatus="ringing" on the INITIAL inbound TeXML webhook
+      // for outbound-routed-internally calls (web user → another internal
+      // user's number). If we route that initial ringing webhook to
+      // handleTeXMLStatusCallback we return empty TeXML and Telnyx terminates
+      // the call in ~50 ms — visible to the caller as "call screen opens and
+      // closes immediately" with sipCode 200 + NORMAL_CLEARING + duration 0,
+      // and no inbound call_history row ever gets inserted. See
+      // .claude/INTERNAL_CALL_ROUTING_FIXES_2026_05_24.md §2.1 for the full
+      // history. Gate ONLY on terminal CallStatus values; ringing /
+      // in-progress fall through to handleTeXMLIncoming.
+      const terminalCallStatuses = new Set([
+        'completed', 'busy', 'no-answer', 'noanswer', 'failed', 'canceled',
+      ]);
+      if (
+        formObj.CallStatus &&
+        formObj.CallSid &&
+        terminalCallStatuses.has(formObj.CallStatus.toLowerCase())
+      ) {
         console.log('=== TEXML STATUS CALLBACK ===', formObj.CallStatus);
         return await handleTeXMLStatusCallback(formObj);
       }
