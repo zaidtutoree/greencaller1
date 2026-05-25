@@ -253,12 +253,24 @@ async function handleTeXMLIncoming(formData: Record<string, string>) {
       call_sid: callSid,
     });
 
-    // Get the user's SIP credentials with freshness check
-    const { data: regData } = await supabaseQuery('telnyx_webrtc_registrations', {
-      select: 'sip_username,updated_at,expires_at',
-      filters: { user_id: userId },
-      single: true,
+    // Get the user's freshest SIP credential. NEVER use single: true here —
+    // telnyx_webrtc_registrations has one row per (user_id, device_type),
+    // so a user logged in on both mobile and web has 2 rows and PostgREST's
+    // single-object accept header returns 406 Not Acceptable, which makes
+    // this function falsely think the user has no registration and routes
+    // the call to voicemail. Fetch ordered by updated_at desc and pick the
+    // freshest row.
+    const supabaseUrlForReg = Deno.env.get('SUPABASE_URL')!;
+    const supabaseKeyForReg = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+    const regsUrl = `${supabaseUrlForReg}/rest/v1/telnyx_webrtc_registrations?user_id=eq.${encodeURIComponent(userId)}&select=sip_username,updated_at,expires_at,device_type&order=updated_at.desc&limit=1`;
+    const regsRes = await fetch(regsUrl, {
+      headers: { apikey: supabaseKeyForReg, Authorization: `Bearer ${supabaseKeyForReg}` },
     });
+    let regData: any = null;
+    if (regsRes.ok) {
+      const regsRows = await regsRes.json();
+      if (Array.isArray(regsRows) && regsRows.length > 0) regData = regsRows[0];
+    }
 
     if (regData?.sip_username) {
       // Check if registration is fresh (updated within last 3 minutes)
