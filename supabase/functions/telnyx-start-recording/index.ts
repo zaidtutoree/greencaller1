@@ -99,6 +99,38 @@ serve(async (req) => {
 
     console.log('Starting recording for Telnyx call:', { callId, userId, fromNumber, toNumber });
 
+    // Write a recording-attribution hint so the BEFORE-INSERT trigger on
+    // call_recordings can point the recording at the user who pressed Record
+    // (rather than blindly picking the outbound caller). Direction-agnostic:
+    // the trigger matches by from/to phone-digit suffix regardless of who's
+    // calling whom. See .claude/OUTBOUND_METHOD.md §G' for the architecture.
+    if (userId && (fromNumber || toNumber)) {
+      try {
+        const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+        const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+        const normalize = (n: string | undefined) => (n || '').replace(/\D/g, '').slice(-9);
+        const hintBody = {
+          user_id: userId,
+          call_sid: callId,
+          from_digits: normalize(fromNumber) || null,
+          to_digits: normalize(toNumber) || null,
+        };
+        await fetch(`${supabaseUrl}/rest/v1/recording_attribution_hints`, {
+          method: 'POST',
+          headers: {
+            apikey: supabaseKey,
+            Authorization: `Bearer ${supabaseKey}`,
+            'Content-Type': 'application/json',
+            Prefer: 'return=minimal',
+          },
+          body: JSON.stringify(hintBody),
+        });
+        console.log('Wrote recording_attribution_hint:', hintBody);
+      } catch (e) {
+        console.log('Failed to write recording_attribution_hint (non-fatal):', e);
+      }
+    }
+
     // Determine the call type:
     // - Call Control IDs start with v2: or v3: (outbound calls OR newer TeXML format)
     // - TeXML CallSids are UUIDs (older inbound calls)
