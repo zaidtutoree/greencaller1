@@ -166,7 +166,7 @@ serve(async (req) => {
           console.log('Env check - URL set:', !!supabaseUrlInner, 'Key length:', supabaseKeyInner?.length || 0);
 
           // Get the 10 most recent calls — no time/direction filter for debug
-          const searchUrl = `${supabaseUrlInner}/rest/v1/call_history?order=created_at.desc&limit=10&select=call_sid,to_number,direction,created_at,status`;
+          const searchUrl = `${supabaseUrlInner}/rest/v1/call_history?order=created_at.desc&limit=10&select=call_sid,from_number,to_number,direction,created_at,status`;
 
           console.log('DB lookup URL:', searchUrl);
           const searchRes = await fetch(searchUrl, {
