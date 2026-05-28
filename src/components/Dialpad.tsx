@@ -212,20 +212,7 @@ const Dialpad = ({ userId, onMakeCall, accountType }: DialpadProps) => {
         </div>
 
         <div className="space-y-4">
-          {accountType === "premium" || accountType === "enterprise" ? (
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <input
-                type="checkbox"
-                id="recordCall"
-                checked={recordCall}
-                onChange={(e) => setRecordCall(e.target.checked)}
-                className="rounded border-gray-300 cursor-pointer"
-              />
-              <label htmlFor="recordCall" className="cursor-pointer">
-                Record this call
-              </label>
-            </div>
-          ) : (
+          {accountType === "premium" || accountType === "enterprise" ? null : (
             <div className="flex items-center gap-2 rounded-lg bg-muted/50 px-3 py-2.5 text-sm">
               <Sparkles className="w-4 h-4 text-primary shrink-0" />
               <span className="text-muted-foreground">
