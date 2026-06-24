@@ -22,6 +22,9 @@ import { Header } from "@/components/layout/Header";
 import { ActiveCallModal } from "@/components/ActiveCallModal";
 import { ActiveCallPanel } from "@/components/ActiveCallPanel";
 import { IncomingCallModal } from "@/components/IncomingCallModal";
+import { CallNoteDialog } from "@/components/CallNoteDialog";
+import { CallNotes } from "@/components/CallNotes";
+import { useCallNoteController } from "@/hooks/useCallNoteController";
 import { useCallProvider } from "@/hooks/useCallProvider";
 import { AlertTriangle, RefreshCw } from "lucide-react";
 
@@ -35,6 +38,7 @@ const TAB_TITLES: Record<string, { title: string; subtitle: string }> = {
   activity: { title: "Activity", subtitle: "Call history and recordings" },
   contacts: { title: "Contacts", subtitle: "Manage your contact list" },
   departments: { title: "Switchboard", subtitle: "Department call management" },
+  notes: { title: "Call Notes", subtitle: "Notes captured during your calls" },
   admin: { title: "Administration", subtitle: "User and system settings" },
 };
 
@@ -72,6 +76,9 @@ export const EnterprisePlatform = ({ userId }: EnterprisePlatformProps) => {
     sendDtmf,
     isRegistrationStale,
   } = useCallProvider({ userId, assignedNumber, provider });
+
+  // Per-call notes (enterprise). Tracks a stable call ref + direction.
+  const notes = useCallNoteController(callState);
 
   // Reset to panel view when a new call starts
   useEffect(() => {
@@ -288,8 +295,24 @@ export const EnterprisePlatform = ({ userId }: EnterprisePlatformProps) => {
   };
 
   const handleMakeCall = (phoneNumber: string, record: boolean = false) => {
+    notes.markOutbound();
     makeCall(phoneNumber, record);
     setDialpadOpen(false);
+  };
+
+  const handleAnswerIncoming = () => {
+    notes.markInbound();
+    answerIncomingCall();
+  };
+
+  const handlePickupQueued = (callInfo: {
+    phoneNumber: string;
+    conferenceName: string;
+    callSid: string;
+    queueId?: string;
+  }) => {
+    notes.markInbound();
+    return (pickupQueuedCall as (info: typeof callInfo) => void | Promise<void>)(callInfo);
   };
 
   const currentTab = TAB_TITLES[activeTab] || TAB_TITLES.home;
@@ -305,7 +328,9 @@ export const EnterprisePlatform = ({ userId }: EnterprisePlatformProps) => {
       case "contacts":
         return <Contacts userId={userId} onCall={handleMakeCall} />;
       case "departments":
-        return <Switchboard userId={userId} onPickupCall={pickupQueuedCall} />;
+        return <Switchboard userId={userId} onPickupCall={handlePickupQueued} />;
+      case "notes":
+        return <CallNotes userId={userId} />;
       case "admin":
         return isAdmin ? (
           <div className="p-6 space-y-8 animate-fade-in">
@@ -402,6 +427,7 @@ export const EnterprisePlatform = ({ userId }: EnterprisePlatformProps) => {
             onEndCall={endCall}
             onTransfer={transferCall}
             onMinimize={() => setCallViewMode("modal")}
+            onOpenNotes={notes.openNotes}
             onSendDtmf={sendDtmf}
             userId={userId}
             accountType="enterprise"
@@ -426,9 +452,19 @@ export const EnterprisePlatform = ({ userId }: EnterprisePlatformProps) => {
         onEndCall={endCall}
         onTransfer={transferCall}
         onExpand={() => setCallViewMode("panel")}
+        onOpenNotes={notes.openNotes}
         onSendDtmf={sendDtmf}
         userId={userId}
         accountType="enterprise"
+      />
+
+      {/* Call Notes editor */}
+      <CallNoteDialog
+        open={notes.notesOpen}
+        onOpenChange={notes.setNotesOpen}
+        userId={userId}
+        session={notes.session}
+        duration={callState.duration}
       />
 
       {/* Incoming Call Modal */}
@@ -437,7 +473,7 @@ export const EnterprisePlatform = ({ userId }: EnterprisePlatformProps) => {
         isDismissed={incomingCall.isDismissed}
         callerNumber={incomingCall.phoneNumber}
         callerName={incomingCall.callerName}
-        onPickup={answerIncomingCall}
+        onPickup={handleAnswerIncoming}
         onDecline={declineIncomingCall}
         onDismiss={dismissIncomingCall}
         onRestore={restoreIncomingCall}

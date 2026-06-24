@@ -10,6 +10,7 @@ import {
   Circle,
   PhoneOff,
   Maximize2,
+  NotebookPen,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { TransferCallDialog } from "./TransferCallDialog";
@@ -32,6 +33,7 @@ interface ActiveCallModalProps {
   onEndCall: () => void;
   onTransfer: (targetId: string, targetType: "user" | "department") => void;
   onExpand?: () => void;
+  onOpenNotes?: () => void;
   onSendDtmf: (digit: string) => void;
   userId?: string;
   accountType?: string;
@@ -54,10 +56,12 @@ export const ActiveCallModal = ({
   onEndCall,
   onTransfer,
   onExpand,
+  onOpenNotes,
   onSendDtmf,
   userId,
   accountType,
 }: ActiveCallModalProps) => {
+  const canUseNotes = accountType === "premium" || accountType === "enterprise";
   const [position, setPosition] = useState({ x: 20, y: 20 });
   const [isDragging, setIsDragging] = useState(false);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
@@ -146,17 +150,32 @@ export const ActiveCallModal = ({
           onMouseDown={handleMouseDown}
         >
           <div className="w-10 h-1 rounded-full bg-white/30" />
-          {onExpand && (
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                onExpand();
-              }}
-              className="w-7 h-7 rounded-full bg-white/15 hover:bg-white/25 flex items-center justify-center transition-colors"
-            >
-              <Maximize2 className="w-3.5 h-3.5 text-white" />
-            </button>
-          )}
+          <div className="flex items-center gap-1.5">
+            {canUseNotes && onOpenNotes && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onOpenNotes();
+                }}
+                className="w-7 h-7 rounded-full bg-white/15 hover:bg-white/25 flex items-center justify-center transition-colors"
+                title="Call notes"
+              >
+                <NotebookPen className="w-3.5 h-3.5 text-white" />
+              </button>
+            )}
+            {onExpand && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onExpand();
+                }}
+                className="w-7 h-7 rounded-full bg-white/15 hover:bg-white/25 flex items-center justify-center transition-colors"
+                title="Expand to full call screen"
+              >
+                <Maximize2 className="w-3.5 h-3.5 text-white" />
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Caller Info */}

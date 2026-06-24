@@ -11,6 +11,7 @@ import {
   PhoneOff,
   Minimize2,
   Phone,
+  NotebookPen,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { TransferCallDialog } from "./TransferCallDialog";
@@ -33,6 +34,7 @@ interface ActiveCallPanelProps {
   onEndCall: () => void;
   onTransfer: (targetId: string, targetType: "user" | "department") => void;
   onMinimize: () => void;
+  onOpenNotes?: () => void;
   onSendDtmf: (digit: string) => void;
   userId?: string;
   accountType?: string;
@@ -54,11 +56,13 @@ export const ActiveCallPanel = ({
   onEndCall,
   onTransfer,
   onMinimize,
+  onOpenNotes,
   onSendDtmf,
   userId,
   accountType,
 }: ActiveCallPanelProps) => {
   const [transferDialogOpen, setTransferDialogOpen] = useState(false);
+  const canUseNotes = accountType === "premium" || accountType === "enterprise";
 
   const formatDuration = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -87,14 +91,28 @@ export const ActiveCallPanel = ({
             </div>
             <SheetTitle className="font-display text-base">Active Call</SheetTitle>
           </div>
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={onMinimize}
-            className="h-8 w-8"
-          >
-            <Minimize2 className="w-4 h-4" />
-          </Button>
+          <div className="flex items-center gap-1">
+            {canUseNotes && onOpenNotes && (
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={onOpenNotes}
+                className="h-8 w-8"
+                title="Call notes"
+              >
+                <NotebookPen className="w-4 h-4" />
+              </Button>
+            )}
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={onMinimize}
+              className="h-8 w-8"
+              title="Minimize to card"
+            >
+              <Minimize2 className="w-4 h-4" />
+            </Button>
+          </div>
         </SheetHeader>
 
         {/* Scrollable Caller Info */}

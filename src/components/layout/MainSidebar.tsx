@@ -9,6 +9,7 @@ import {
   Network,
   Settings,
   Grid3x3,
+  NotebookPen,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -45,6 +46,7 @@ export const MainSidebar = ({
     { icon: Home, label: "Home", value: "home" },
     { icon: MessageSquare, label: "Messages", value: "messages", badge: unreadMessageCount },
     { icon: History, label: "Activity", value: "activity" },
+    { icon: NotebookPen, label: "Notes", value: "notes" },
     { icon: Users, label: "Contacts", value: "contacts" },
     { icon: Network, label: "Switchboard", value: "departments", badge: queueCount },
     { icon: Settings, label: "Admin", value: "admin", adminOnly: true },

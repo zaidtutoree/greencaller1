@@ -15,6 +15,9 @@ import { useCallProvider } from "@/hooks/useCallProvider";
 import { ActiveCallModal } from "@/components/ActiveCallModal";
 import { ActiveCallPanel } from "@/components/ActiveCallPanel";
 import { IncomingCallModal } from "@/components/IncomingCallModal";
+import { CallNoteDialog } from "@/components/CallNoteDialog";
+import { CallNotes } from "@/components/CallNotes";
+import { useCallNoteController } from "@/hooks/useCallNoteController";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { AlertTriangle, RefreshCw } from "lucide-react";
 
@@ -71,6 +74,9 @@ const Dashboard = () => {
     sendDtmf,
     isRegistrationStale,
   } = useCallProvider({ userId: user?.id, assignedNumber, provider });
+
+  // Per-call notes (premium/enterprise). Tracks a stable call ref + direction.
+  const notes = useCallNoteController(callState);
 
   useEffect(() => {
     const checkAuth = async () => {
@@ -155,7 +161,13 @@ const Dashboard = () => {
   }, []);
 
   const handleMakeCall = (phoneNumber: string, record: boolean = false) => {
+    notes.markOutbound();
     makeCall(phoneNumber, record);
+  };
+
+  const handleAnswerIncoming = () => {
+    notes.markInbound();
+    answerIncomingCall();
   };
 
   if (loading) {
@@ -210,6 +222,7 @@ const Dashboard = () => {
               <Route path="history" element={<CallHistory userId={user?.id} />} />
               <Route path="voicemails" element={<VoicemailList userId={user?.id} />} />
               <Route path="recordings" element={<CallRecordings userId={user?.id} />} />
+              <Route path="notes" element={<CallNotes userId={user?.id} />} />
             </Routes>
             </div>
           </main>
@@ -237,6 +250,7 @@ const Dashboard = () => {
               onEndCall={endCall}
               onTransfer={transferCall}
               onMinimize={() => setCallViewMode("modal")}
+              onOpenNotes={notes.openNotes}
               onSendDtmf={sendDtmf}
               userId={user?.id}
               accountType={accountType}
@@ -263,7 +277,17 @@ const Dashboard = () => {
           onSendDtmf={sendDtmf}
           userId={user?.id}
           onExpand={() => setCallViewMode("panel")}
+          onOpenNotes={notes.openNotes}
           accountType={accountType}
+        />
+
+        {/* Call Notes editor (premium/enterprise) */}
+        <CallNoteDialog
+          open={notes.notesOpen}
+          onOpenChange={notes.setNotesOpen}
+          userId={user?.id}
+          session={notes.session}
+          duration={callState.duration}
         />
 
         {/* Incoming Call Modal */}
@@ -272,7 +296,7 @@ const Dashboard = () => {
           isDismissed={incomingCall.isDismissed}
           callerNumber={incomingCall.phoneNumber}
           callerName={incomingCall.callerName}
-          onPickup={answerIncomingCall}
+          onPickup={handleAnswerIncoming}
           onDecline={declineIncomingCall}
           onDismiss={dismissIncomingCall}
           onRestore={restoreIncomingCall}

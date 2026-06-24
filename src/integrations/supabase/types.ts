@@ -135,6 +135,56 @@ export type Database = {
           },
         ]
       }
+      call_notes: {
+        Row: {
+          call_history_id: string | null
+          call_ref: string
+          contact_name: string | null
+          created_at: string
+          direction: string | null
+          duration: number | null
+          id: string
+          note: string
+          phone_number: string | null
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          call_history_id?: string | null
+          call_ref: string
+          contact_name?: string | null
+          created_at?: string
+          direction?: string | null
+          duration?: number | null
+          id?: string
+          note?: string
+          phone_number?: string | null
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          call_history_id?: string | null
+          call_ref?: string
+          contact_name?: string | null
+          created_at?: string
+          direction?: string | null
+          duration?: number | null
+          id?: string
+          note?: string
+          phone_number?: string | null
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "call_notes_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       call_queue: {
         Row: {
           call_sid: string

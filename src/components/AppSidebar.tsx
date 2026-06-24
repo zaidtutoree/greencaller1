@@ -14,7 +14,7 @@ import {
   SidebarFooter,
   useSidebar,
 } from "@/components/ui/sidebar";
-import { Phone, MessageSquare, History, Settings, LogOut, User, Voicemail, Home, Mic, Building2 } from "lucide-react";
+import { Phone, MessageSquare, History, Settings, LogOut, User, Voicemail, Home, Mic, Building2, NotebookPen } from "lucide-react";
 import brandLogo from "@/assets/brand-logo.png";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -56,6 +56,12 @@ const navigationItems = [
     title: "Recordings",
     url: "/dashboard/recordings",
     icon: Mic,
+    requiresAccount: 'premium' as const,
+  },
+  {
+    title: "Notes",
+    url: "/dashboard/notes",
+    icon: NotebookPen,
     requiresAccount: 'premium' as const,
   },
 ];
