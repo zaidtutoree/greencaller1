@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 
 interface ActivityViewProps {
   userId?: string;
+  accountType?: string;
 }
 
 type ViewType = "all" | "missed" | "voicemail" | "recordings";
@@ -20,7 +21,7 @@ const navigationItems = [
   { id: "recordings" as ViewType, label: "Recordings", icon: Mic },
 ];
 
-export const ActivityView = ({ userId }: ActivityViewProps) => {
+export const ActivityView = ({ userId, accountType }: ActivityViewProps) => {
   const [activeView, setActiveView] = useState<ViewType>("all");
 
   return (
@@ -53,8 +54,8 @@ export const ActivityView = ({ userId }: ActivityViewProps) => {
 
       {/* Main Content Area */}
       <div className="flex-1 overflow-auto">
-        {activeView === "all" && <CallHistory userId={userId} />}
-        {activeView === "missed" && <CallHistory userId={userId} filterMissed />}
+        {activeView === "all" && <CallHistory userId={userId} accountType={accountType} />}
+        {activeView === "missed" && <CallHistory userId={userId} filterMissed accountType={accountType} />}
         {activeView === "voicemail" && <VoicemailList userId={userId} />}
         {activeView === "recordings" && <CallRecordings userId={userId} />}
       </div>

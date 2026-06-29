@@ -219,7 +219,7 @@ const Dashboard = () => {
               <Route path="/" element={<Home userId={user?.id} accountType={accountType} />} />
               <Route path="dialpad" element={<Dialpad userId={user?.id} onMakeCall={handleMakeCall} accountType={accountType} />} />
               <Route path="messages" element={<MessagesList userId={user?.id} />} />
-              <Route path="history" element={<CallHistory userId={user?.id} />} />
+              <Route path="history" element={<CallHistory userId={user?.id} accountType={accountType} />} />
               <Route path="voicemails" element={<VoicemailList userId={user?.id} />} />
               <Route path="recordings" element={<CallRecordings userId={user?.id} />} />
               <Route path="notes" element={<CallNotes userId={user?.id} />} />

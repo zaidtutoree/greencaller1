@@ -244,6 +244,7 @@ export type Database = {
       }
       call_recordings: {
         Row: {
+          ai_summary: string | null
           call_sid: string
           created_at: string | null
           direction: string
@@ -258,6 +259,7 @@ export type Database = {
           user_id: string | null
         }
         Insert: {
+          ai_summary?: string | null
           call_sid: string
           created_at?: string | null
           direction: string
@@ -272,6 +274,7 @@ export type Database = {
           user_id?: string | null
         }
         Update: {
+          ai_summary?: string | null
           call_sid?: string
           created_at?: string | null
           direction?: string

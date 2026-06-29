@@ -324,7 +324,7 @@ export const EnterprisePlatform = ({ userId }: EnterprisePlatformProps) => {
       case "messages":
         return <MessagesList userId={userId} onMessagesRead={fetchUnreadMessageCount} />;
       case "activity":
-        return <ActivityView userId={userId} />;
+        return <ActivityView userId={userId} accountType="enterprise" />;
       case "contacts":
         return <Contacts userId={userId} onCall={handleMakeCall} />;
       case "departments":

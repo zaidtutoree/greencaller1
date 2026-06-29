@@ -2,10 +2,11 @@ import { useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/integrations/supabase/client";
-import { Trash2, Download, FileText, Play } from "lucide-react";
+import { Trash2, Download, FileText, Play, Sparkles, ChevronDown, ChevronUp } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { formatDistanceToNow } from "date-fns";
 import RecordingPlayerModal from "./RecordingPlayerModal";
+import { CallSummaryDialog, CallSummaryTarget } from "./CallSummaryDialog";
 
 interface Recording {
   id: string;
@@ -18,6 +19,7 @@ interface Recording {
   direction: string;
   created_at: string;
   transcription: string | null;
+  ai_summary: string | null;
 }
 
 interface CallRecordingsProps {
@@ -30,7 +32,20 @@ const CallRecordings = ({ userId }: CallRecordingsProps) => {
   const [transcribing, setTranscribing] = useState<string | null>(null);
   const [selectedRecording, setSelectedRecording] = useState<Recording | null>(null);
   const [playerOpen, setPlayerOpen] = useState(false);
+  const [summaryTarget, setSummaryTarget] = useState<CallSummaryTarget | null>(null);
+  const [summaryOpen, setSummaryOpen] = useState(false);
+  // Recording ids whose transcript is expanded. Transcripts start collapsed so
+  // they don't take up space; the user expands the ones they want to read.
+  const [expandedTranscripts, setExpandedTranscripts] = useState<Set<string>>(new Set());
   const { toast } = useToast();
+
+  const toggleTranscript = (id: string) => {
+    setExpandedTranscripts((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
 
   useEffect(() => {
     fetchRecordings();
@@ -111,7 +126,10 @@ const CallRecordings = ({ userId }: CallRecordingsProps) => {
         title: "Success",
         description: "Recording transcribed successfully",
       });
-      
+
+      // Expand the transcript the user just generated so they see it right away.
+      setExpandedTranscripts((prev) => new Set(prev).add(id));
+
       // Refresh recordings to show new transcription
       fetchRecordings();
     } catch (error) {
@@ -207,6 +225,25 @@ const CallRecordings = ({ userId }: CallRecordingsProps) => {
                       <Button
                         variant="outline"
                         size="sm"
+                        onClick={() => {
+                          setSummaryTarget({
+                            recordingId: recording.id,
+                            phoneNumber:
+                              recording.direction === "outbound"
+                                ? recording.to_number
+                                : recording.from_number,
+                            direction: recording.direction,
+                            hasSummary: !!recording.ai_summary,
+                          });
+                          setSummaryOpen(true);
+                        }}
+                      >
+                        <Sparkles className="h-4 w-4 mr-2 text-primary" />
+                        AI Summary
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
                         onClick={async () => {
                           try {
                             const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
@@ -252,7 +289,22 @@ const CallRecordings = ({ userId }: CallRecordingsProps) => {
                   
                   {recording.transcription && (
                     <div className="border-t pt-4">
-                      <p className="text-sm font-medium mb-2">Transcription:</p>
+                      <button
+                        onClick={() => toggleTranscript(recording.id)}
+                        className="flex items-center gap-1.5 text-sm font-medium mb-2 hover:text-primary transition-colors"
+                        title={expandedTranscripts.has(recording.id) ? "Hide transcript" : "Show transcript"}
+                      >
+                        {expandedTranscripts.has(recording.id) ? (
+                          <ChevronUp className="h-4 w-4" />
+                        ) : (
+                          <ChevronDown className="h-4 w-4" />
+                        )}
+                        Transcription
+                        <span className="text-xs text-muted-foreground font-normal">
+                          {expandedTranscripts.has(recording.id) ? "(click to hide)" : "(click to show)"}
+                        </span>
+                      </button>
+                      {expandedTranscripts.has(recording.id) && (
                       <div className="space-y-2 max-h-64 overflow-y-auto">
                         {recording.transcription.split('\n').map((line, index) => {
                           const isCaller = line.startsWith('[CALLER]:');
@@ -299,6 +351,7 @@ const CallRecordings = ({ userId }: CallRecordingsProps) => {
                           );
                         })}
                       </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -312,6 +365,12 @@ const CallRecordings = ({ userId }: CallRecordingsProps) => {
         recording={selectedRecording}
         open={playerOpen}
         onOpenChange={setPlayerOpen}
+      />
+
+      <CallSummaryDialog
+        open={summaryOpen}
+        onOpenChange={setSummaryOpen}
+        target={summaryTarget}
       />
     </div>
   );
