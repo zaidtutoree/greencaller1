@@ -844,6 +844,33 @@ export type Database = {
           },
         ]
       }
+      user_contacts: {
+        Row: {
+          created_at: string | null
+          email: string | null
+          id: string
+          name: string
+          phone_number: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string | null
+          email?: string | null
+          id?: string
+          name: string
+          phone_number: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string | null
+          email?: string | null
+          id?: string
+          name?: string
+          phone_number?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       voicemails: {
         Row: {
           created_at: string | null

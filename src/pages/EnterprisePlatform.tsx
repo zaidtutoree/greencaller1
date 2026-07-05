@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { Contacts } from "@/components/Contacts";
+import { ContactsView } from "@/components/ContactsView";
 import { Switchboard } from "@/components/Switchboard";
 import Home from "./Home";
 import Dialpad from "@/components/Dialpad";
@@ -11,9 +11,8 @@ import CompanyManagement from "@/components/CompanyManagement";
 import UserCallUsage from "@/components/UserCallUsage";
 import LiveCDR from "@/components/LiveCDR";
 import { IVRConfiguration } from "@/components/IVRConfiguration";
-import { ProfileSettings } from "@/components/ProfileSettings";
+import { SettingsModal } from "@/components/SettingsModal";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { supabase } from "@/integrations/supabase/client";
 import { useNavigate } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
@@ -326,7 +325,7 @@ export const EnterprisePlatform = ({ userId }: EnterprisePlatformProps) => {
       case "activity":
         return <ActivityView userId={userId} accountType="enterprise" />;
       case "contacts":
-        return <Contacts userId={userId} onCall={handleMakeCall} />;
+        return <ContactsView userId={userId} onCall={handleMakeCall} />;
       case "departments":
         return <Switchboard userId={userId} onPickupCall={handlePickupQueued} />;
       case "notes":
@@ -480,30 +479,24 @@ export const EnterprisePlatform = ({ userId }: EnterprisePlatformProps) => {
         onSendToVoicemail={sendIncomingToVoicemail}
       />
 
-      {/* Profile Settings Dialog */}
-      <Dialog open={profileOpen} onOpenChange={setProfileOpen}>
-        <DialogContent className="max-w-2xl p-0">
-          <ProfileSettings 
-            userId={userId} 
-            onClose={() => {
-              setProfileOpen(false);
-              // Refresh user info after profile update
-              const refreshUserInfo = async () => {
-                const { data: profile } = await supabase
-                  .from("profiles")
-                  .select("full_name, avatar_url")
-                  .eq("id", userId)
-                  .single();
-                if (profile) {
-                  setUserName(profile.full_name);
-                  setUserAvatarUrl(profile.avatar_url);
-                }
-              };
-              refreshUserInfo();
-            }} 
-          />
-        </DialogContent>
-      </Dialog>
+      {/* Settings Modal (Profile / Audio / Ringtone) */}
+      <SettingsModal
+        open={profileOpen}
+        onOpenChange={setProfileOpen}
+        userId={userId}
+        onProfileSaved={async () => {
+          // Refresh user info after profile update
+          const { data: profile } = await supabase
+            .from("profiles")
+            .select("full_name, avatar_url")
+            .eq("id", userId)
+            .single();
+          if (profile) {
+            setUserName(profile.full_name);
+            setUserAvatarUrl(profile.avatar_url);
+          }
+        }}
+      />
     </div>
   );
 };

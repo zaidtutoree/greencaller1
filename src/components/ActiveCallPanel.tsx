@@ -17,6 +17,7 @@ import { cn } from "@/lib/utils";
 import { TransferCallDialog } from "./TransferCallDialog";
 import { InCallKeypad } from "./InCallKeypad";
 import { SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { useContactName } from "@/utils/contactLookup";
 
 interface ActiveCallPanelProps {
   callerName?: string;
@@ -63,6 +64,8 @@ export const ActiveCallPanel = ({
 }: ActiveCallPanelProps) => {
   const [transferDialogOpen, setTransferDialogOpen] = useState(false);
   const canUseNotes = accountType === "premium" || accountType === "enterprise";
+  // Prefer a saved contact's name over the network-provided name.
+  const displayName = useContactName(callerNumber, callerName);
 
   const formatDuration = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -134,7 +137,7 @@ export const ActiveCallPanel = ({
               <Avatar className="w-16 h-16 border-3 border-success/20 shadow-lg">
                 <AvatarImage src={callerAvatar} />
                 <AvatarFallback className="bg-muted text-foreground text-lg font-semibold">
-                  {getInitials(callerName)}
+                  {getInitials(displayName)}
                 </AvatarFallback>
               </Avatar>
               <span className="absolute bottom-0.5 right-0.5 w-3.5 h-3.5 bg-success rounded-full border-2 border-background animate-pulse" />
@@ -142,7 +145,7 @@ export const ActiveCallPanel = ({
 
             {/* Caller Details */}
             <h2 className="text-base font-semibold text-foreground mb-0.5">
-              {callerName || "Unknown Caller"}
+              {displayName || "Unknown Caller"}
             </h2>
             {callerCompany && (
               <p className="text-xs text-muted-foreground mb-1">{callerCompany}</p>

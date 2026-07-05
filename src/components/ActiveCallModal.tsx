@@ -15,6 +15,7 @@ import {
 import { cn } from "@/lib/utils";
 import { TransferCallDialog } from "./TransferCallDialog";
 import { InCallKeypad } from "./InCallKeypad";
+import { useContactName } from "@/utils/contactLookup";
 
 interface ActiveCallModalProps {
   isVisible: boolean;
@@ -62,6 +63,8 @@ export const ActiveCallModal = ({
   accountType,
 }: ActiveCallModalProps) => {
   const canUseNotes = accountType === "premium" || accountType === "enterprise";
+  // Prefer a saved contact's name over the network-provided name.
+  const displayName = useContactName(callerNumber, callerName);
   const [position, setPosition] = useState({ x: 20, y: 20 });
   const [isDragging, setIsDragging] = useState(false);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
@@ -185,14 +188,14 @@ export const ActiveCallModal = ({
               <Avatar className="w-14 h-14 border-2 border-white/30 shadow-lg">
                 <AvatarImage src={callerAvatar} />
                 <AvatarFallback className="bg-white/20 text-white text-base font-semibold backdrop-blur-sm">
-                  {getInitials(callerName)}
+                  {getInitials(displayName)}
                 </AvatarFallback>
               </Avatar>
               <span className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 bg-green-400 rounded-full border-2 border-green-900 animate-pulse" />
             </div>
             <div className="flex-1 min-w-0">
               <h3 className="text-white font-semibold text-base truncate">
-                {callerName || "Unknown Caller"}
+                {displayName || "Unknown Caller"}
               </h3>
               <p className="text-white/70 text-sm flex items-center gap-2 mt-0.5">
                 <span className="font-mono text-xs">{callerNumber}</span>

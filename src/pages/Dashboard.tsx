@@ -6,6 +6,7 @@ import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import Home from "./Home";
 import Dialpad from "@/components/Dialpad";
+import { PersonalContacts } from "@/components/PersonalContacts";
 import MessagesList from "@/components/MessagesList";
 import CallHistory from "@/components/CallHistory";
 import { VoicemailList } from "@/components/VoicemailList";
@@ -218,6 +219,11 @@ const Dashboard = () => {
             <Routes>
               <Route path="/" element={<Home userId={user?.id} accountType={accountType} />} />
               <Route path="dialpad" element={<Dialpad userId={user?.id} onMakeCall={handleMakeCall} accountType={accountType} />} />
+              <Route path="contacts" element={
+                <div className="max-w-2xl mx-auto h-[calc(100vh-10rem)] border rounded-lg bg-card overflow-hidden">
+                  <PersonalContacts userId={user?.id} onCall={handleMakeCall} />
+                </div>
+              } />
               <Route path="messages" element={<MessagesList userId={user?.id} />} />
               <Route path="history" element={<CallHistory userId={user?.id} accountType={accountType} />} />
               <Route path="voicemails" element={<VoicemailList userId={user?.id} />} />

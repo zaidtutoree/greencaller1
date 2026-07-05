@@ -14,12 +14,13 @@ import {
   SidebarFooter,
   useSidebar,
 } from "@/components/ui/sidebar";
-import { Phone, MessageSquare, History, Settings, LogOut, User, Voicemail, Home, Mic, Building2, NotebookPen } from "lucide-react";
+import { Phone, MessageSquare, History, Settings, LogOut, User, Voicemail, Home, Mic, Building2, NotebookPen, Users } from "lucide-react";
 import brandLogo from "@/assets/brand-logo.png";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
+import { SettingsModal } from "@/components/SettingsModal";
 
 interface AppSidebarProps {
   userEmail?: string;
@@ -35,6 +36,11 @@ const navigationItems = [
     title: "Dial Pad",
     url: "/dashboard/dialpad",
     icon: Phone,
+  },
+  {
+    title: "Contacts",
+    url: "/dashboard/contacts",
+    icon: Users,
   },
   {
     title: "Messages",
@@ -73,18 +79,22 @@ export function AppSidebar({ userEmail }: AppSidebarProps) {
   const { toast } = useToast();
   const [accountType, setAccountType] = useState<'basic' | 'premium' | 'enterprise'>('basic');
   const [isAdmin, setIsAdmin] = useState(false);
+  const [userId, setUserId] = useState<string | undefined>(undefined);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   useEffect(() => {
     const fetchAccountTypeAndRole = async () => {
       const { data: { user } } = await supabase.auth.getUser();
       if (user) {
+        setUserId(user.id);
+
         // Fetch account type
         const { data: profileData } = await supabase
           .from('profiles')
           .select('account_type')
           .eq('id', user.id)
           .single();
-        
+
         if (profileData) {
           setAccountType(profileData.account_type);
         }
@@ -166,15 +176,38 @@ export function AppSidebar({ userEmail }: AppSidebarProps) {
             </SidebarMenuItem>
           )}
           <SidebarMenuItem>
-            <SidebarMenuButton asChild>
-              <button onClick={handleLogout} className="flex items-center gap-3 w-full">
-                <LogOut className="w-5 h-5 flex-shrink-0" />
-                {!isCollapsed && <span>Logout</span>}
-              </button>
-            </SidebarMenuButton>
+            <div className="flex items-center gap-1 w-full">
+              <SidebarMenuButton asChild className="flex-1">
+                <button onClick={handleLogout} className="flex items-center gap-3 w-full">
+                  <LogOut className="w-5 h-5 flex-shrink-0" />
+                  {!isCollapsed && <span>Logout</span>}
+                </button>
+              </SidebarMenuButton>
+              {!isCollapsed && (
+                <button
+                  onClick={() => setSettingsOpen(true)}
+                  title="Settings"
+                  aria-label="Settings"
+                  className="flex items-center justify-center h-8 w-8 rounded-md text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground transition-colors flex-shrink-0"
+                >
+                  <Settings className="w-5 h-5" />
+                </button>
+              )}
+            </div>
           </SidebarMenuItem>
+          {isCollapsed && (
+            <SidebarMenuItem>
+              <SidebarMenuButton asChild>
+                <button onClick={() => setSettingsOpen(true)} className="flex items-center gap-3 w-full">
+                  <Settings className="w-5 h-5 flex-shrink-0" />
+                </button>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          )}
         </SidebarMenu>
       </SidebarFooter>
+
+      <SettingsModal open={settingsOpen} onOpenChange={setSettingsOpen} userId={userId} />
     </Sidebar>
   );
 }

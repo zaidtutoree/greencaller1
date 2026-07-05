@@ -3,6 +3,8 @@ import { Phone, PhoneOff, X, Voicemail } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { cn } from "@/lib/utils";
+import { createRingtoneAudio } from "@/utils/ringtone";
+import { useContactName } from "@/utils/contactLookup";
 
 interface IncomingCallModalProps {
   isVisible: boolean;
@@ -29,14 +31,16 @@ export const IncomingCallModal = ({
 }: IncomingCallModalProps) => {
   const [isMuted, setIsMuted] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  // Prefer a saved contact's name over the network-provided name.
+  const displayName = useContactName(callerNumber, callerName);
 
   const notificationRef = useRef<Notification | null>(null);
 
   // Initialize and play ringtone - works even in background tabs
   useEffect(() => {
     if (isVisible || isDismissed) {
-      const audio = new Audio("/ringtone.wav");
-      audio.loop = true;
+      // Use the user's selected ringtone (falls back to Default/classic).
+      const audio = createRingtoneAudio();
       audioRef.current = audio;
 
       if (!isMuted && isVisible) {
@@ -46,7 +50,7 @@ export const IncomingCallModal = ({
 
       // Show browser notification so user is alerted even in another tab
       if ("Notification" in window && Notification.permission === "granted" && isVisible) {
-        const title = callerName || callerNumber || "Unknown Caller";
+        const title = displayName || callerNumber || "Unknown Caller";
         notificationRef.current = new Notification("Incoming Call", {
           body: `${title} is calling...`,
           icon: "/brand-logo.png",
@@ -150,12 +154,12 @@ export const IncomingCallModal = ({
           <p className="text-sm text-muted-foreground uppercase tracking-wider mb-2">
             Incoming Call
           </p>
-          {callerName && (
-            <h2 className="text-2xl font-bold text-foreground mb-1">{callerName}</h2>
+          {displayName && (
+            <h2 className="text-2xl font-bold text-foreground mb-1">{displayName}</h2>
           )}
           <p className={cn(
             "text-lg",
-            callerName ? "text-muted-foreground" : "text-foreground font-semibold text-2xl"
+            displayName ? "text-muted-foreground" : "text-foreground font-semibold text-2xl"
           )}>
             {callerNumber}
           </p>

@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { TelnyxRTC } from "@telnyx/webrtc";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
+import { applySelectedMic, applySelectedSpeaker, AUDIO_DEVICES_CHANGED } from "@/utils/audioDevices";
 
 interface TelnyxCallState {
   isActive: boolean;
@@ -60,6 +61,20 @@ export const useTelnyxCall = ({ userId, assignedNumber, enabled = true }: UseTel
 
   const [isClientReady, setIsClientReady] = useState(false);
   const [isRegistrationStale, setIsRegistrationStale] = useState(false);
+
+  // Apply the user's selected microphone / speaker to the live client and the
+  // remote audio element. Purely additive and fully guarded (see audioDevices),
+  // so it never affects call setup — re-runs when the client becomes ready or
+  // the user changes a device in Settings.
+  useEffect(() => {
+    const apply = () => {
+      applySelectedMic(clientRef.current);
+      applySelectedSpeaker(remoteAudioRef.current);
+    };
+    apply();
+    window.addEventListener(AUDIO_DEVICES_CHANGED, apply);
+    return () => window.removeEventListener(AUDIO_DEVICES_CHANGED, apply);
+  }, [isClientReady]);
   const lastHeartbeatRef = useRef<number>(Date.now());
   const [callState, setCallState] = useState<TelnyxCallState>({
     isActive: false,
@@ -243,6 +258,8 @@ export const useTelnyxCall = ({ userId, assignedNumber, enabled = true }: UseTel
       audioEl.style.display = 'none';
       document.body.appendChild(audioEl);
       remoteAudioRef.current = audioEl;
+      // Route call audio to the selected output device (if any).
+      applySelectedSpeaker(audioEl);
     }
 
     const initializeTelnyxClient = async () => {
@@ -419,6 +436,7 @@ export const useTelnyxCall = ({ userId, assignedNumber, enabled = true }: UseTel
               if (remoteAudioRef.current.srcObject !== remoteStream) {
                 console.log("Attaching remote audio stream");
                 remoteAudioRef.current.srcObject = remoteStream;
+                applySelectedSpeaker(remoteAudioRef.current);
                 remoteAudioRef.current.play().catch((e: any) => {
                   console.warn("Failed to play remote audio:", e);
                 });
