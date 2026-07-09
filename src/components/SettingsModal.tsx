@@ -1,12 +1,13 @@
 import { useState } from "react";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
-import { User, Mic, Music } from "lucide-react";
+import { User, Mic, Music, Clock } from "lucide-react";
 import { ProfileSettings } from "@/components/ProfileSettings";
 import { AudioSettings } from "@/components/AudioSettings";
 import { RingtoneSettings } from "@/components/RingtoneSettings";
+import { OpeningHours } from "@/components/OpeningHours";
 import { cn } from "@/lib/utils";
 
-type SettingsTab = "profile" | "audio" | "ringtone";
+type SettingsTab = "profile" | "audio" | "ringtone" | "hours";
 
 interface SettingsModalProps {
   open: boolean;
@@ -20,6 +21,7 @@ const TABS: { id: SettingsTab; label: string; icon: typeof User }[] = [
   { id: "profile", label: "Profile", icon: User },
   { id: "audio", label: "Audio Settings", icon: Mic },
   { id: "ringtone", label: "Ringtone", icon: Music },
+  { id: "hours", label: "Opening Hours", icon: Clock },
 ];
 
 export const SettingsModal = ({ open, onOpenChange, userId, onProfileSaved }: SettingsModalProps) => {
@@ -78,6 +80,15 @@ export const SettingsModal = ({ open, onOpenChange, userId, onProfileSaved }: Se
               <div className="p-6">
                 <h2 className="text-2xl font-display font-semibold mb-4">Ringtone</h2>
                 <RingtoneSettings />
+              </div>
+            )}
+            {activeTab === "hours" && (
+              <div className="p-6">
+                <h2 className="text-2xl font-display font-semibold mb-1">Opening Hours</h2>
+                <p className="text-sm text-muted-foreground mb-6">
+                  Optionally send calls to voicemail outside your opening hours.
+                </p>
+                <OpeningHours userId={userId} />
               </div>
             )}
           </div>

@@ -14,7 +14,7 @@ import {
   SidebarFooter,
   useSidebar,
 } from "@/components/ui/sidebar";
-import { Phone, MessageSquare, History, Settings, LogOut, User, Voicemail, Home, Mic, Building2, NotebookPen, Users } from "lucide-react";
+import { Phone, MessageSquare, History, Settings, LogOut, User, Voicemail, Home, Mic, Building2, NotebookPen, Users, Bot } from "lucide-react";
 import brandLogo from "@/assets/brand-logo.png";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -70,6 +70,12 @@ const navigationItems = [
     icon: NotebookPen,
     requiresAccount: 'premium' as const,
   },
+  {
+    title: "AI Assistant",
+    url: "/dashboard/ai-assistant",
+    icon: Bot,
+    requiresAssistant: true as const,
+  },
 ];
 
 export function AppSidebar({ userEmail }: AppSidebarProps) {
@@ -81,6 +87,7 @@ export function AppSidebar({ userEmail }: AppSidebarProps) {
   const [isAdmin, setIsAdmin] = useState(false);
   const [userId, setUserId] = useState<string | undefined>(undefined);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [hasAssistant, setHasAssistant] = useState(false);
 
   useEffect(() => {
     const fetchAccountTypeAndRole = async () => {
@@ -101,6 +108,14 @@ export function AppSidebar({ userEmail }: AppSidebarProps) {
 
         // Check if user is the admin email
         setIsAdmin(user.email === 'admin@gmail.com');
+
+        // Show the AI Assistant tab only if one is assigned to this user (RLS-scoped).
+        const { data: assistant } = await supabase
+          .from('ai_assistants')
+          .select('id')
+          .eq('assigned_user_id', user.id)
+          .maybeSingle();
+        setHasAssistant(!!assistant);
       }
     };
 
@@ -122,6 +137,9 @@ export function AppSidebar({ userEmail }: AppSidebarProps) {
       return false;
     }
     if (item.requiresAccount === 'enterprise' && accountType !== 'enterprise') {
+      return false;
+    }
+    if ((item as { requiresAssistant?: boolean }).requiresAssistant && !hasAssistant) {
       return false;
     }
     return true;

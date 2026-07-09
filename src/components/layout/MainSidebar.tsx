@@ -10,6 +10,7 @@ import {
   Settings,
   Grid3x3,
   NotebookPen,
+  Bot,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -22,6 +23,7 @@ interface NavItem {
   value: string;
   badge?: number;
   adminOnly?: boolean;
+  requiresAssistant?: boolean;
 }
 
 interface MainSidebarProps {
@@ -30,6 +32,7 @@ interface MainSidebarProps {
   isAdmin: boolean;
   queueCount: number;
   unreadMessageCount?: number;
+  hasAssistant?: boolean;
   onDialpadOpen: () => void;
 }
 
@@ -39,6 +42,7 @@ export const MainSidebar = ({
   isAdmin,
   queueCount,
   unreadMessageCount = 0,
+  hasAssistant = false,
   onDialpadOpen,
 }: MainSidebarProps) => {
 
@@ -48,11 +52,13 @@ export const MainSidebar = ({
     { icon: History, label: "Activity", value: "activity" },
     { icon: NotebookPen, label: "Notes", value: "notes" },
     { icon: Users, label: "Contacts", value: "contacts" },
+    { icon: Bot, label: "AI Assistant", value: "ai-assistant", requiresAssistant: true },
     { icon: Network, label: "Switchboard", value: "departments", badge: queueCount },
     { icon: Settings, label: "Admin", value: "admin", adminOnly: true },
   ];
 
-  const filteredNavItems = navItems.filter(item => !item.adminOnly || isAdmin);
+  const filteredNavItems = navItems.filter(item =>
+    (!item.adminOnly || isAdmin) && (!item.requiresAssistant || hasAssistant));
 
   return (
     <TooltipProvider delayDuration={0}>

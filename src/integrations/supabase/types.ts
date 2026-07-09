@@ -79,6 +79,107 @@ export type Database = {
         }
         Relationships: []
       }
+      ai_booked_slots: {
+        Row: {
+          assistant_id: string
+          created_at: string | null
+          id: string
+          slot_date: string
+          slot_time: string
+          title: string | null
+          user_id: string
+        }
+        Insert: {
+          assistant_id: string
+          created_at?: string | null
+          id?: string
+          slot_date: string
+          slot_time: string
+          title?: string | null
+          user_id: string
+        }
+        Update: {
+          assistant_id?: string
+          created_at?: string | null
+          id?: string
+          slot_date?: string
+          slot_time?: string
+          title?: string | null
+          user_id?: string
+        }
+        Relationships: []
+      }
+      ai_assistants: {
+        Row: {
+          assigned_user_id: string | null
+          character_prompt: string | null
+          collect_fields: Json
+          created_at: string | null
+          description: string | null
+          greeting: string | null
+          id: string
+          insight_group_id: string | null
+          instructions: string | null
+          is_active: boolean
+          model: string
+          name: string
+          telnyx_assistant_id: string | null
+          telnyx_phone_number: string | null
+          telnyx_phone_number_id: string | null
+          telnyx_texml_app_id: string | null
+          voice: string
+          updated_at: string | null
+        }
+        Insert: {
+          assigned_user_id?: string | null
+          character_prompt?: string | null
+          collect_fields?: Json
+          created_at?: string | null
+          description?: string | null
+          greeting?: string | null
+          id?: string
+          insight_group_id?: string | null
+          instructions?: string | null
+          is_active?: boolean
+          model?: string
+          name: string
+          telnyx_assistant_id?: string | null
+          telnyx_phone_number?: string | null
+          telnyx_phone_number_id?: string | null
+          telnyx_texml_app_id?: string | null
+          voice?: string
+          updated_at?: string | null
+        }
+        Update: {
+          assigned_user_id?: string | null
+          character_prompt?: string | null
+          collect_fields?: Json
+          created_at?: string | null
+          description?: string | null
+          greeting?: string | null
+          id?: string
+          insight_group_id?: string | null
+          instructions?: string | null
+          is_active?: boolean
+          model?: string
+          name?: string
+          telnyx_assistant_id?: string | null
+          telnyx_phone_number?: string | null
+          telnyx_phone_number_id?: string | null
+          telnyx_texml_app_id?: string | null
+          voice?: string
+          updated_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "ai_assistants_assigned_user_id_fkey"
+            columns: ["assigned_user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       call_history: {
         Row: {
           billing_group: string | null
@@ -494,6 +595,41 @@ export type Database = {
             foreignKeyName: "messages_user_id_fkey"
             columns: ["user_id"]
             isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      opening_hours: {
+        Row: {
+          enabled: boolean
+          hours: Json
+          timezone: string
+          updated_at: string | null
+          user_id: string
+          voicemail_message: string | null
+        }
+        Insert: {
+          enabled?: boolean
+          hours?: Json
+          timezone?: string
+          updated_at?: string | null
+          user_id: string
+          voicemail_message?: string | null
+        }
+        Update: {
+          enabled?: boolean
+          hours?: Json
+          timezone?: string
+          updated_at?: string | null
+          user_id?: string
+          voicemail_message?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "opening_hours_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: true
             referencedRelation: "profiles"
             referencedColumns: ["id"]
           },

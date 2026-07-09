@@ -12,8 +12,9 @@ import DepartmentManagement from "@/components/DepartmentManagement";
 import { IVRConfiguration } from "@/components/IVRConfiguration";
 import PhoneNumbersManagement from "@/components/admin/PhoneNumbersManagement";
 import SubscriptionManagement from "@/components/SubscriptionManagement";
+import { AILab } from "@/components/admin/AILab";
 
-type AdminView = "cdr" | "users" | "usage" | "companies" | "departments" | "phones" | "ivr" | "subscriptions";
+type AdminView = "cdr" | "users" | "usage" | "companies" | "departments" | "phones" | "ivr" | "subscriptions" | "ailab";
 
 const AdminDash = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -31,7 +32,7 @@ const AdminDash = () => {
   useEffect(() => {
     // Parse view from URL hash
     const hash = location.hash.replace("#", "");
-    if (hash && ["cdr", "users", "usage", "companies", "departments", "phones", "ivr", "subscriptions"].includes(hash)) {
+    if (hash && ["cdr", "users", "usage", "companies", "departments", "phones", "ivr", "subscriptions", "ailab"].includes(hash)) {
       setActiveView(hash as AdminView);
     }
   }, [location.hash]);
@@ -123,6 +124,8 @@ const AdminDash = () => {
         return <IVRConfiguration />;
       case "subscriptions":
         return <SubscriptionManagement />;
+      case "ailab":
+        return <AILab />;
       default:
         return <LiveCDR />;
     }

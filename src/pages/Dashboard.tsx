@@ -7,6 +7,7 @@ import { AppSidebar } from "@/components/AppSidebar";
 import Home from "./Home";
 import Dialpad from "@/components/Dialpad";
 import { PersonalContacts } from "@/components/PersonalContacts";
+import { AIAssistant } from "@/components/AIAssistant";
 import MessagesList from "@/components/MessagesList";
 import CallHistory from "@/components/CallHistory";
 import { VoicemailList } from "@/components/VoicemailList";
@@ -229,6 +230,7 @@ const Dashboard = () => {
               <Route path="voicemails" element={<VoicemailList userId={user?.id} />} />
               <Route path="recordings" element={<CallRecordings userId={user?.id} />} />
               <Route path="notes" element={<CallNotes userId={user?.id} />} />
+              <Route path="ai-assistant" element={<AIAssistant userId={user?.id} />} />
             </Routes>
             </div>
           </main>

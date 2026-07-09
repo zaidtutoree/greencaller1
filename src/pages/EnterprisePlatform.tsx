@@ -23,6 +23,7 @@ import { ActiveCallPanel } from "@/components/ActiveCallPanel";
 import { IncomingCallModal } from "@/components/IncomingCallModal";
 import { CallNoteDialog } from "@/components/CallNoteDialog";
 import { CallNotes } from "@/components/CallNotes";
+import { AIAssistant } from "@/components/AIAssistant";
 import { useCallNoteController } from "@/hooks/useCallNoteController";
 import { useCallProvider } from "@/hooks/useCallProvider";
 import { AlertTriangle, RefreshCw } from "lucide-react";
@@ -38,6 +39,7 @@ const TAB_TITLES: Record<string, { title: string; subtitle: string }> = {
   contacts: { title: "Contacts", subtitle: "Manage your contact list" },
   departments: { title: "Switchboard", subtitle: "Department call management" },
   notes: { title: "Call Notes", subtitle: "Notes captured during your calls" },
+  "ai-assistant": { title: "AI Assistant", subtitle: "Your AI assistant, its stats and collected data" },
   admin: { title: "Administration", subtitle: "User and system settings" },
 };
 
@@ -46,6 +48,7 @@ export const EnterprisePlatform = ({ userId }: EnterprisePlatformProps) => {
   const { toast } = useToast();
   const [dialpadOpen, setDialpadOpen] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [hasAssistant, setHasAssistant] = useState(false);
   const [queueCount, setQueueCount] = useState(0);
   const [activeTab, setActiveTab] = useState("home");
   const [userEmail, setUserEmail] = useState<string>("");
@@ -124,6 +127,16 @@ export const EnterprisePlatform = ({ userId }: EnterprisePlatformProps) => {
       if (idleTimerRef.current) window.clearTimeout(idleTimerRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    if (!userId) return;
+    supabase
+      .from("ai_assistants")
+      .select("id")
+      .eq("assigned_user_id", userId)
+      .maybeSingle()
+      .then(({ data }) => setHasAssistant(!!data));
+  }, [userId]);
 
   useEffect(() => {
     const checkAdminRole = async () => {
@@ -330,6 +343,8 @@ export const EnterprisePlatform = ({ userId }: EnterprisePlatformProps) => {
         return <Switchboard userId={userId} onPickupCall={handlePickupQueued} />;
       case "notes":
         return <CallNotes userId={userId} />;
+      case "ai-assistant":
+        return <AIAssistant userId={userId} />;
       case "admin":
         return isAdmin ? (
           <div className="p-6 space-y-8 animate-fade-in">
@@ -355,6 +370,7 @@ export const EnterprisePlatform = ({ userId }: EnterprisePlatformProps) => {
         isAdmin={isAdmin}
         queueCount={queueCount}
         unreadMessageCount={unreadMessageCount}
+        hasAssistant={hasAssistant}
         onDialpadOpen={() => setDialpadOpen(true)}
       />
 
