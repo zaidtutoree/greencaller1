@@ -8,6 +8,7 @@ import Dashboard from "./pages/Dashboard";
 import Admin from "./pages/Admin";
 import AdminAuth from "./pages/AdminAuth";
 import AdminDash from "./pages/AdminDash";
+import ControlDashboard from "./pages/ControlDashboard";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -25,6 +26,8 @@ const App = () => (
           <Route path="/admin" element={<Admin />} />
           <Route path="/adminauth" element={<AdminAuth />} />
           <Route path="/admindash" element={<AdminDash />} />
+          {/* Company-admin dashboard: one company's users, IVR and AI assistants. */}
+          <Route path="/control" element={<ControlDashboard />} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           <Route path="*" element={<NotFound />} />
         </Routes>

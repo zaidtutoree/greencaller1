@@ -2,7 +2,7 @@ import { useEffect, useState, useRef } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Send, Search, User, MessageCircle, Check, CheckCheck, Smile } from "lucide-react";
+import { Send, Search, User, MessageCircle, Check, CheckCheck, Smile, ChevronLeft } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
 import { format, isToday, isYesterday } from "date-fns";
@@ -33,6 +33,12 @@ interface TeamMessage {
 interface MessagesListProps {
   userId?: string;
   onMessagesRead?: () => void;
+  /**
+   * Tighter, single-pane layout for narrow containers (Sidebar Mode's slide-out
+   * panel). The 320px contact list and the conversation cannot sit side by side
+   * in a 380px panel, so compact shows one at a time with a back button.
+   */
+  compact?: boolean;
 }
 
 // Typing indicator component
@@ -47,16 +53,18 @@ const TypingIndicator = () => (
 );
 
 // Message bubble component
-const MessageBubble = ({ 
-  message, 
-  isSent, 
+const MessageBubble = ({
+  message,
+  isSent,
   showAvatar,
-  senderName 
-}: { 
-  message: TeamMessage; 
-  isSent: boolean; 
+  senderName,
+  compact = false,
+}: {
+  message: TeamMessage;
+  isSent: boolean;
   showAvatar: boolean;
   senderName: string;
+  compact?: boolean;
 }) => {
   const getInitials = (name: string) => {
     return name.split(" ").map(n => n[0]).join("").toUpperCase().slice(0, 2);
@@ -70,10 +78,10 @@ const MessageBubble = ({
       )}
     >
       {/* Avatar */}
-      <div className="w-8 flex-shrink-0">
+      <div className={cn("flex-shrink-0", compact ? "w-6" : "w-8")}>
         {showAvatar && !isSent && (
-          <Avatar className="w-8 h-8">
-            <AvatarFallback className="bg-primary/10 text-primary text-xs">
+          <Avatar className={compact ? "w-6 h-6" : "w-8 h-8"}>
+            <AvatarFallback className={cn("bg-primary/10 text-primary", compact ? "text-[9px]" : "text-xs")}>
               {getInitials(senderName)}
             </AvatarFallback>
           </Avatar>
@@ -81,16 +89,17 @@ const MessageBubble = ({
       </div>
 
       {/* Message Content */}
-      <div className={cn("max-w-[70%] group", isSent ? "items-end" : "items-start")}>
+      <div className={cn("group min-w-0", compact ? "max-w-[82%]" : "max-w-[70%]", isSent ? "items-end" : "items-start")}>
         <div
           className={cn(
-            "px-4 py-2.5 rounded-2xl transition-all duration-200",
-            isSent 
-              ? "bg-primary text-primary-foreground rounded-br-md" 
+            "rounded-2xl transition-all duration-200",
+            compact ? "px-2.5 py-1.5" : "px-4 py-2.5",
+            isSent
+              ? "bg-primary text-primary-foreground rounded-br-md"
               : "bg-card border border-border rounded-bl-md shadow-sm"
           )}
         >
-          <p className="text-sm whitespace-pre-wrap break-words leading-relaxed">
+          <p className={cn("whitespace-pre-wrap break-words", compact ? "text-[11px] leading-snug" : "text-sm leading-relaxed")}>
             {message.message_body}
           </p>
         </div>
@@ -136,7 +145,7 @@ const DateSeparator = ({ date }: { date: Date }) => {
   );
 };
 
-const MessagesList = ({ userId, onMessagesRead }: MessagesListProps) => {
+const MessagesList = ({ userId, onMessagesRead, compact = false }: MessagesListProps) => {
   const [conversationMessages, setConversationMessages] = useState<TeamMessage[]>([]);
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
   const [selectedMember, setSelectedMember] = useState<TeamMember | null>(null);
@@ -360,31 +369,39 @@ const MessagesList = ({ userId, onMessagesRead }: MessagesListProps) => {
 
   return (
     <div className="flex h-full">
-      {/* Left Sidebar - Team Members */}
-      <div className="w-80 min-w-[320px] max-w-[320px] border-r border-border flex flex-col bg-card overflow-hidden">
-        <div className="p-5 border-b border-border space-y-4">
+      {/* Left Sidebar - Team Members. In compact this is the whole width and
+          hides once a conversation is open. */}
+      <div
+        className={cn(
+          "border-border flex flex-col bg-card overflow-hidden",
+          compact
+            ? cn("w-full", selectedMember && "hidden")
+            : "w-80 min-w-[320px] max-w-[320px] border-r",
+        )}
+      >
+        <div className={cn("border-b border-border", compact ? "p-2.5 space-y-2" : "p-5 space-y-4")}>
           <div className="flex items-center justify-between">
-            <h2 className="font-display text-lg font-semibold flex items-center gap-2">
-              <MessageCircle className="w-5 h-5 text-primary" />
+            <h2 className={cn("font-display font-semibold flex items-center gap-2", compact ? "text-sm" : "text-lg")}>
+              <MessageCircle className={cn("text-primary", compact ? "w-4 h-4" : "w-5 h-5")} />
               Messages
             </h2>
-            <Badge variant="secondary" className="text-xs">
+            <Badge variant="secondary" className={compact ? "text-[10px] font-normal" : "text-xs"}>
               {teamMembers.length} contacts
             </Badge>
           </div>
           <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+            <Search className={cn("absolute top-1/2 -translate-y-1/2 text-muted-foreground", compact ? "left-2.5 w-3.5 h-3.5" : "left-3 w-4 h-4")} />
             <Input
               placeholder="Search conversations..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-9 bg-background"
+              className={cn("bg-background", compact ? "pl-8 h-8 text-xs" : "pl-9")}
             />
           </div>
         </div>
 
         <ScrollArea className="flex-1 w-full">
-          <div className="p-2 max-w-full overflow-hidden">
+          <div className={cn("max-w-full overflow-hidden", compact ? "p-1.5" : "p-2")}>
             {filteredMembers.length === 0 ? (
               <div className="text-center py-12">
                 <div className="w-12 h-12 mx-auto rounded-full bg-muted flex items-center justify-center mb-3">
@@ -403,7 +420,8 @@ const MessagesList = ({ userId, onMessagesRead }: MessagesListProps) => {
                       key={member.id}
                       onClick={() => handleSelectMember(member)}
                       className={cn(
-                        "w-full flex items-center gap-3 p-3 rounded-xl transition-all duration-200 overflow-hidden",
+                        "w-full flex items-center rounded-xl transition-all duration-200 overflow-hidden",
+                        compact ? "gap-2 p-2" : "gap-3 p-3",
                         isSelected
                           ? "bg-accent shadow-sm"
                           : hasUnread
@@ -413,11 +431,13 @@ const MessagesList = ({ userId, onMessagesRead }: MessagesListProps) => {
                     >
                       <div className="relative flex-shrink-0">
                         <Avatar className={cn(
-                          "h-12 w-12 border-2",
+                          "border-2",
+                          compact ? "h-9 w-9" : "h-12 w-12",
                           hasUnread ? "border-yellow-400" : "border-background"
                         )}>
                           <AvatarFallback className={cn(
-                            "text-sm font-medium",
+                            "font-medium",
+                            compact ? "text-[11px]" : "text-sm",
                             isSelected ? "bg-primary/20 text-primary" : hasUnread ? "bg-yellow-400/20 text-yellow-600" : "bg-muted"
                           )}>
                             {getInitials(member.full_name)}
@@ -432,6 +452,7 @@ const MessagesList = ({ userId, onMessagesRead }: MessagesListProps) => {
                         <div className="flex items-center justify-between mb-0.5">
                           <p className={cn(
                             "font-medium truncate min-w-0 flex-1",
+                            compact && "text-xs",
                             hasUnread && "text-foreground"
                           )}>
                             {member.full_name}
@@ -450,13 +471,17 @@ const MessagesList = ({ userId, onMessagesRead }: MessagesListProps) => {
                         </div>
                         <div className="flex items-center justify-between">
                           <p className={cn(
-                            "text-sm truncate min-w-0 flex-1",
+                            "truncate min-w-0 flex-1",
+                            compact ? "text-[11px]" : "text-sm",
                             hasUnread ? "text-foreground font-medium" : "text-muted-foreground"
                           )}>
                             {member.lastMessage || "No messages yet"}
                           </p>
                           {hasUnread && (
-                            <Badge className="bg-yellow-400 text-black h-5 min-w-5 px-1.5 text-xs flex-shrink-0 ml-2">
+                            <Badge className={cn(
+                              "bg-yellow-400 text-black flex-shrink-0 ml-2",
+                              compact ? "h-4 min-w-4 px-1 text-[10px]" : "h-5 min-w-5 px-1.5 text-xs",
+                            )}>
                               {member.unreadCount}
                             </Badge>
                           )}
@@ -471,16 +496,31 @@ const MessagesList = ({ userId, onMessagesRead }: MessagesListProps) => {
         </ScrollArea>
       </div>
 
-      {/* Right Panel - Conversation */}
-      <div className="flex-1 flex flex-col bg-background-subtle">
+      {/* Right Panel - Conversation. In compact this replaces the list. */}
+      <div
+        className={cn(
+          "flex-1 flex flex-col bg-background-subtle min-w-0",
+          compact && !selectedMember && "hidden",
+        )}
+      >
         {selectedMember ? (
           <>
             {/* Chat Header */}
-            <div className="border-b border-border p-4 bg-card">
-              <div className="flex items-center gap-3">
-                <div className="relative">
-                  <Avatar className="h-10 w-10">
-                    <AvatarFallback className="bg-primary/10 text-primary">
+            <div className={cn("border-b border-border bg-card", compact ? "p-2 px-2.5" : "p-4")}>
+              <div className={cn("flex items-center", compact ? "gap-2" : "gap-3")}>
+                {compact && (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedMember(null)}
+                    aria-label="Back to conversations"
+                    className="flex items-center justify-center h-7 w-7 -ml-1 rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors shrink-0"
+                  >
+                    <ChevronLeft className="w-4 h-4" />
+                  </button>
+                )}
+                <div className="relative shrink-0">
+                  <Avatar className={compact ? "h-8 w-8" : "h-10 w-10"}>
+                    <AvatarFallback className={cn("bg-primary/10 text-primary", compact && "text-[11px]")}>
                       {getInitials(selectedMember.full_name)}
                     </AvatarFallback>
                   </Avatar>
@@ -488,10 +528,11 @@ const MessagesList = ({ userId, onMessagesRead }: MessagesListProps) => {
                     <span className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-success border-2 border-card rounded-full" />
                   )}
                 </div>
-                <div className="flex-1">
-                  <h3 className="font-display font-semibold">{selectedMember.full_name}</h3>
+                <div className="flex-1 min-w-0">
+                  <h3 className={cn("font-display font-semibold truncate", compact && "text-xs")}>{selectedMember.full_name}</h3>
                   <p className={cn(
-                    "text-xs flex items-center gap-1",
+                    "flex items-center gap-1",
+                    compact ? "text-[10px]" : "text-xs",
                     selectedMember.isOnline ? "text-success" : "text-muted-foreground"
                   )}>
                     <span className={cn(
@@ -505,15 +546,15 @@ const MessagesList = ({ userId, onMessagesRead }: MessagesListProps) => {
             </div>
 
             {/* Messages Area */}
-            <ScrollArea className="flex-1 p-4" ref={scrollRef}>
+            <ScrollArea className={cn("flex-1", compact ? "p-2.5" : "p-4")} ref={scrollRef}>
               <div className="max-w-3xl mx-auto space-y-2">
                 {conversationMessages.length === 0 ? (
-                  <div className="text-center py-20">
-                    <div className="w-20 h-20 mx-auto rounded-full bg-accent flex items-center justify-center mb-4">
-                      <MessageCircle className="w-10 h-10 text-accent-foreground" />
+                  <div className={cn("text-center", compact ? "py-10" : "py-20")}>
+                    <div className={cn("mx-auto rounded-full bg-accent flex items-center justify-center", compact ? "w-12 h-12 mb-3" : "w-20 h-20 mb-4")}>
+                      <MessageCircle className={cn("text-accent-foreground", compact ? "w-6 h-6" : "w-10 h-10")} />
                     </div>
-                    <h3 className="font-display font-semibold text-lg mb-1">Start a conversation</h3>
-                    <p className="text-sm text-muted-foreground">
+                    <h3 className={cn("font-display font-semibold mb-1", compact ? "text-sm" : "text-lg")}>Start a conversation</h3>
+                    <p className={cn("text-muted-foreground", compact ? "text-xs" : "text-sm")}>
                       Send a message to {selectedMember.full_name}
                     </p>
                   </div>
@@ -534,6 +575,7 @@ const MessagesList = ({ userId, onMessagesRead }: MessagesListProps) => {
                               isSent={isSent}
                               showAvatar={showAvatar}
                               senderName={selectedMember.full_name}
+                              compact={compact}
                             />
                           );
                         })}
@@ -559,15 +601,18 @@ const MessagesList = ({ userId, onMessagesRead }: MessagesListProps) => {
             </ScrollArea>
 
             {/* Message Input */}
-            <div className="border-t border-border p-4 bg-card">
-              <form onSubmit={handleSendMessage} className="flex gap-3 max-w-3xl mx-auto">
-                <div className="flex-1 relative">
+            <div className={cn("border-t border-border bg-card", compact ? "p-2" : "p-4")}>
+              <form onSubmit={handleSendMessage} className={cn("flex max-w-3xl mx-auto", compact ? "gap-2" : "gap-3")}>
+                <div className="flex-1 relative min-w-0">
                   <Input
                     value={messageBody}
                     onChange={(e) => setMessageBody(e.target.value)}
                     placeholder="Type a message..."
                     disabled={loading}
-                    className="pr-10 bg-background border-border focus:border-primary"
+                    className={cn(
+                      "bg-background border-border focus:border-primary",
+                      compact ? "pr-8 h-8 text-xs" : "pr-10",
+                    )}
                     onKeyDown={(e) => {
                       if (e.key === "Enter" && !e.shiftKey) {
                         e.preventDefault();
@@ -575,22 +620,26 @@ const MessagesList = ({ userId, onMessagesRead }: MessagesListProps) => {
                       }
                     }}
                   />
-                  <Button 
-                    type="button" 
-                    variant="ghost" 
-                    size="icon-sm" 
-                    className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    className={cn(
+                      "absolute top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground",
+                      compact ? "right-1 h-6 w-6" : "right-2",
+                    )}
                   >
-                    <Smile className="w-4 h-4" />
+                    <Smile className={compact ? "w-3.5 h-3.5" : "w-4 h-4"} />
                   </Button>
                 </div>
-                <Button 
-                  type="submit" 
+                <Button
+                  type="submit"
                   disabled={loading || !messageBody.trim()}
-                  className="gap-2"
+                  className={cn("gap-2 shrink-0", compact && "h-8 w-8 p-0")}
+                  aria-label="Send message"
                 >
-                  <Send className="w-4 h-4" />
-                  <span className="hidden sm:inline">Send</span>
+                  <Send className={compact ? "w-3.5 h-3.5" : "w-4 h-4"} />
+                  {!compact && <span className="hidden sm:inline">Send</span>}
                 </Button>
               </form>
             </div>

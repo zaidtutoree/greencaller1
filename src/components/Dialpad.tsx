@@ -5,14 +5,17 @@ import { Input } from "@/components/ui/input";
 import { Phone, Delete, Sparkles } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
+import { cn } from "@/lib/utils";
 
 interface DialpadProps {
   userId?: string;
   onMakeCall?: (phoneNumber: string, record: boolean) => void;
   accountType?: string;
+  /** Tighter layout for narrow containers (Sidebar Mode's slide-out panel). */
+  compact?: boolean;
 }
 
-const Dialpad = ({ userId, onMakeCall, accountType }: DialpadProps) => {
+const Dialpad = ({ userId, onMakeCall, accountType, compact = false }: DialpadProps) => {
   const [phoneNumber, setPhoneNumber] = useState("");
   const [assignedNumber, setAssignedNumber] = useState<string | null>(null);
   const [provider, setProvider] = useState<string>("twilio");
@@ -151,8 +154,8 @@ const Dialpad = ({ userId, onMakeCall, accountType }: DialpadProps) => {
   };
 
   return (
-    <Card className="max-w-md mx-auto border-0 shadow-none">
-      <CardHeader className="pb-4">
+    <Card className={cn("max-w-md mx-auto border-0 shadow-none", compact && "bg-transparent")}>
+      <CardHeader className={compact ? "px-3 pt-3 pb-2" : "pb-4"}>
         <CardTitle className="text-center text-lg">
           {assignedNumber ? (
             <span className="text-sm text-muted-foreground font-normal">
@@ -163,13 +166,16 @@ const Dialpad = ({ userId, onMakeCall, accountType }: DialpadProps) => {
           )}
         </CardTitle>
       </CardHeader>
-      <CardContent className="space-y-6">
+      <CardContent className={cn(compact ? "space-y-3 px-3 pb-3" : "space-y-6")}>
         <div className="relative">
           <Input
             value={phoneNumber}
             onChange={(e) => setPhoneNumber(e.target.value)}
             placeholder="Enter phone number"
-            className="text-center text-2xl h-14 pr-12"
+            className={cn(
+              "text-center pr-12",
+              compact ? "text-xl h-11" : "text-2xl h-14",
+            )}
           />
           {phoneNumber && (
             <Button
@@ -183,15 +189,18 @@ const Dialpad = ({ userId, onMakeCall, accountType }: DialpadProps) => {
           )}
         </div>
 
-        <div className="grid gap-3">
+        <div className={cn("grid", compact ? "gap-2" : "gap-3")}>
           {dialpadNumbers.map((row, i) => (
-            <div key={i} className="grid grid-cols-3 gap-3">
+            <div key={i} className={cn("grid grid-cols-3", compact ? "gap-2" : "gap-3")}>
               {row.map((num) => (
                 <Button
                   key={num}
                   variant="outline"
                   size="lg"
-                  className="h-16 text-xl font-semibold relative"
+                  className={cn(
+                    "font-semibold relative",
+                    compact ? "h-12 text-lg" : "h-16 text-xl",
+                  )}
                   onClick={() => handleNumberClick(num)}
                   onMouseDown={() => handleLongPressStart(num)}
                   onMouseUp={() => handleLongPressEnd(num)}
@@ -201,7 +210,7 @@ const Dialpad = ({ userId, onMakeCall, accountType }: DialpadProps) => {
                 >
                   <span className="flex flex-col items-center">
                     {num}
-                    {num === "0" && (
+                    {num === "0" && !compact && (
                       <span className="text-[10px] text-muted-foreground absolute bottom-1">hold for +</span>
                     )}
                   </span>
@@ -211,8 +220,8 @@ const Dialpad = ({ userId, onMakeCall, accountType }: DialpadProps) => {
           ))}
         </div>
 
-        <div className="space-y-4">
-          {accountType === "premium" || accountType === "enterprise" ? null : (
+        <div className={compact ? "space-y-2" : "space-y-4"}>
+          {accountType === "premium" || accountType === "enterprise" || compact ? null : (
             <div className="flex items-center gap-2 rounded-lg bg-muted/50 px-3 py-2.5 text-sm">
               <Sparkles className="w-4 h-4 text-primary shrink-0" />
               <span className="text-muted-foreground">
@@ -224,7 +233,13 @@ const Dialpad = ({ userId, onMakeCall, accountType }: DialpadProps) => {
 
           <Button
             onClick={handleCall}
-            className={`w-full h-14 text-lg ${canMakeCalls ? "bg-success hover:bg-success/90" : "bg-muted text-muted-foreground cursor-not-allowed"}`}
+            className={cn(
+              "w-full",
+              compact ? "h-11 text-base" : "h-14 text-lg",
+              canMakeCalls
+                ? "bg-success hover:bg-success/90"
+                : "bg-muted text-muted-foreground cursor-not-allowed",
+            )}
             disabled={!phoneNumber || !assignedNumber || !canMakeCalls}
           >
             <Phone className="w-5 h-5 mr-2" />

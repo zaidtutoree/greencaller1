@@ -342,7 +342,11 @@ export const EnterprisePlatform = ({ userId }: EnterprisePlatformProps) => {
       case "departments":
         return <Switchboard userId={userId} onPickupCall={handlePickupQueued} />;
       case "notes":
-        return <CallNotes userId={userId} />;
+        return (
+          <div className="p-6">
+            <CallNotes userId={userId} />
+          </div>
+        );
       case "ai-assistant":
         return <AIAssistant userId={userId} />;
       case "admin":
@@ -500,6 +504,7 @@ export const EnterprisePlatform = ({ userId }: EnterprisePlatformProps) => {
         open={profileOpen}
         onOpenChange={setProfileOpen}
         userId={userId}
+        isEnterprise
         onProfileSaved={async () => {
           // Refresh user info after profile update
           const { data: profile } = await supabase

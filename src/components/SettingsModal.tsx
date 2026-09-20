@@ -1,13 +1,14 @@
 import { useState } from "react";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
-import { User, Mic, Music, Clock } from "lucide-react";
+import { User, Mic, Music, Clock, Slack } from "lucide-react";
 import { ProfileSettings } from "@/components/ProfileSettings";
 import { AudioSettings } from "@/components/AudioSettings";
 import { RingtoneSettings } from "@/components/RingtoneSettings";
 import { OpeningHours } from "@/components/OpeningHours";
+import { SlackIntegration } from "@/components/SlackIntegration";
 import { cn } from "@/lib/utils";
 
-type SettingsTab = "profile" | "audio" | "ringtone" | "hours";
+type SettingsTab = "profile" | "audio" | "ringtone" | "hours" | "integrations";
 
 interface SettingsModalProps {
   open: boolean;
@@ -15,17 +16,22 @@ interface SettingsModalProps {
   userId?: string;
   /** Called when the profile is saved/closed so the parent can refresh name/avatar. */
   onProfileSaved?: () => void;
+  /** Enterprise users get the Integrations tab (Slack, etc.). */
+  isEnterprise?: boolean;
 }
 
-const TABS: { id: SettingsTab; label: string; icon: typeof User }[] = [
+const BASE_TABS: { id: SettingsTab; label: string; icon: typeof User }[] = [
   { id: "profile", label: "Profile", icon: User },
   { id: "audio", label: "Audio Settings", icon: Mic },
   { id: "ringtone", label: "Ringtone", icon: Music },
   { id: "hours", label: "Opening Hours", icon: Clock },
 ];
 
-export const SettingsModal = ({ open, onOpenChange, userId, onProfileSaved }: SettingsModalProps) => {
+export const SettingsModal = ({ open, onOpenChange, userId, onProfileSaved, isEnterprise }: SettingsModalProps) => {
   const [activeTab, setActiveTab] = useState<SettingsTab>("profile");
+  const TABS = isEnterprise
+    ? [...BASE_TABS, { id: "integrations" as SettingsTab, label: "Integrations", icon: Slack }]
+    : BASE_TABS;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -89,6 +95,15 @@ export const SettingsModal = ({ open, onOpenChange, userId, onProfileSaved }: Se
                   Optionally send calls to voicemail outside your opening hours.
                 </p>
                 <OpeningHours userId={userId} />
+              </div>
+            )}
+            {activeTab === "integrations" && (
+              <div className="p-6">
+                <h2 className="text-2xl font-display font-semibold mb-1">Integrations</h2>
+                <p className="text-sm text-muted-foreground mb-6">
+                  Connect Greencaller to the tools your team already uses.
+                </p>
+                <SlackIntegration />
               </div>
             )}
           </div>

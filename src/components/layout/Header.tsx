@@ -22,9 +22,11 @@ interface HeaderProps {
   userId?: string;
   onNavigate?: (tab: string) => void;
   onProfileClick?: () => void;
+  /** Extra title-bar controls (e.g. the Sidebar mode toggle). */
+  actions?: React.ReactNode;
 }
 
-export const Header = ({ title, subtitle, onLogout, userEmail, userName, userAvatarUrl, userId, onNavigate, onProfileClick }: HeaderProps) => {
+export const Header = ({ title, subtitle, onLogout, userEmail, userName, userAvatarUrl, userId, onNavigate, onProfileClick, actions }: HeaderProps) => {
   const initials = userName
     ? userName.split(" ").map(n => n[0]).join("").toUpperCase().slice(0, 2)
     : userEmail?.[0]?.toUpperCase() || "U";
@@ -41,6 +43,9 @@ export const Header = ({ title, subtitle, onLogout, userEmail, userName, userAva
 
       {/* Right: Actions */}
       <div className="flex items-center gap-3">
+        {/* Window-level controls (Sidebar mode, …) */}
+        {actions}
+
         {/* Search */}
         <GlobalSearch userId={userId} onNavigate={onNavigate} />
 
