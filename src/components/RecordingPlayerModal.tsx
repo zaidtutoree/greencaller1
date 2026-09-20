@@ -26,12 +26,19 @@ interface RecordingPlayerModalProps {
   recording: Recording | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /**
+   * Size the dialog to the viewport instead of a fixed width. Sidebar Mode's
+   * window is narrower than the default sm:max-w-md, which left the close
+   * button off-screen.
+   */
+  compact?: boolean;
 }
 
 const RecordingPlayerModal = ({
   recording,
   open,
   onOpenChange,
+  compact = false,
 }: RecordingPlayerModalProps) => {
   const audioRef = useRef<HTMLAudioElement>(null);
   const blobUrlRef = useRef<string | null>(null);
@@ -236,17 +243,25 @@ const RecordingPlayerModal = ({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent
+        className={
+          compact
+            ? "w-[calc(100vw-1.5rem)] max-w-[calc(100vw-1.5rem)] rounded-lg p-4 gap-3"
+            : "sm:max-w-md"
+        }
+      >
         <DialogHeader>
           <DialogTitle className="flex flex-col gap-1">
-            <span>{recording.direction === "outbound" ? "Outgoing" : "Incoming"} Call Recording</span>
-            <span className="text-sm font-normal text-muted-foreground">
+            <span className={compact ? "text-sm" : undefined}>
+              {recording.direction === "outbound" ? "Outgoing" : "Incoming"} Call Recording
+            </span>
+            <span className={compact ? "text-xs font-normal text-muted-foreground" : "text-sm font-normal text-muted-foreground"}>
               {recording.from_number} → {recording.to_number}
             </span>
           </DialogTitle>
         </DialogHeader>
 
-        <div className="space-y-6 py-4">
+        <div className={compact ? "space-y-4 py-1" : "space-y-6 py-4"}>
           {/* Hidden audio element - src set dynamically via blob URL */}
           <audio
             ref={audioRef}
