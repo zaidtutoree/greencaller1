@@ -14,7 +14,7 @@ import {
   SidebarFooter,
   useSidebar,
 } from "@/components/ui/sidebar";
-import { Phone, MessageSquare, History, Settings, LogOut, User, Voicemail, Home, Mic, Building2, NotebookPen, Users, Bot } from "lucide-react";
+import { Phone, History, Settings, LogOut, User, Voicemail, Home, Mic, Building2, NotebookPen, Users, Bot } from "lucide-react";
 import brandLogo from "@/assets/brand-logo.png";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -41,12 +41,6 @@ const navigationItems = [
     title: "Contacts",
     url: "/dashboard/contacts",
     icon: Users,
-  },
-  {
-    title: "Messages",
-    url: "/dashboard/messages",
-    icon: MessageSquare,
-    requiresAccount: 'enterprise' as const,
   },
   {
     title: "Voicemails",
@@ -136,7 +130,7 @@ export function AppSidebar({ userEmail }: AppSidebarProps) {
     if (item.requiresAccount === 'premium' && accountType === 'basic') {
       return false;
     }
-    if (item.requiresAccount === 'enterprise' && accountType !== 'enterprise') {
+    if ((item.requiresAccount as string | undefined) === 'enterprise' && accountType !== 'enterprise') {
       return false;
     }
     if ((item as { requiresAssistant?: boolean }).requiresAssistant && !hasAssistant) {

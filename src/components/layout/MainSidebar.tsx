@@ -3,7 +3,6 @@ import { NavLink, useLocation } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import {
   Home,
-  MessageSquare,
   History,
   Users,
   Network,
@@ -48,10 +47,10 @@ export const MainSidebar = ({
 
   const navItems: NavItem[] = [
     { icon: Home, label: "Home", value: "home" },
-    { icon: MessageSquare, label: "Messages", value: "messages", badge: unreadMessageCount },
     { icon: History, label: "Activity", value: "activity" },
     { icon: NotebookPen, label: "Notes", value: "notes" },
-    { icon: Users, label: "Contacts", value: "contacts" },
+    // Team messaging lives inside Contacts → Teammates, so unread mail badges here.
+    { icon: Users, label: "Contacts", value: "contacts", badge: unreadMessageCount },
     { icon: Bot, label: "AI Assistant", value: "ai-assistant", requiresAssistant: true },
     { icon: Network, label: "Switchboard", value: "departments", badge: queueCount },
     { icon: Settings, label: "Admin", value: "admin", adminOnly: true },

@@ -3,7 +3,6 @@ import { ContactsView } from "@/components/ContactsView";
 import { Switchboard } from "@/components/Switchboard";
 import Home from "./Home";
 import Dialpad from "@/components/Dialpad";
-import MessagesList from "@/components/MessagesList";
 import { ActivityView } from "@/components/ActivityView";
 import UserManagement from "@/components/UserManagement";
 import DepartmentManagement from "@/components/DepartmentManagement";
@@ -34,7 +33,6 @@ interface EnterprisePlatformProps {
 
 const TAB_TITLES: Record<string, { title: string; subtitle: string }> = {
   home: { title: "Dashboard", subtitle: "Overview of your communication activity" },
-  messages: { title: "Messages", subtitle: "Team communication" },
   activity: { title: "Activity", subtitle: "Call history and recordings" },
   contacts: { title: "Contacts", subtitle: "Manage your contact list" },
   departments: { title: "Switchboard", subtitle: "Department call management" },
@@ -333,12 +331,10 @@ export const EnterprisePlatform = ({ userId }: EnterprisePlatformProps) => {
     switch (activeTab) {
       case "home":
         return <Home userId={userId} />;
-      case "messages":
-        return <MessagesList userId={userId} onMessagesRead={fetchUnreadMessageCount} />;
       case "activity":
         return <ActivityView userId={userId} accountType="enterprise" />;
       case "contacts":
-        return <ContactsView userId={userId} onCall={handleMakeCall} />;
+        return <ContactsView userId={userId} onCall={handleMakeCall} onMessagesRead={fetchUnreadMessageCount} />;
       case "departments":
         return <Switchboard userId={userId} onPickupCall={handlePickupQueued} />;
       case "notes":
