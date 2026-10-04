@@ -11,10 +11,11 @@ import CompanyManagement from "@/components/CompanyManagement";
 import DepartmentManagement from "@/components/DepartmentManagement";
 import { IVRConfiguration } from "@/components/IVRConfiguration";
 import PhoneNumbersManagement from "@/components/admin/PhoneNumbersManagement";
+import DeskPhonesManagement from "@/components/admin/DeskPhonesManagement";
 import SubscriptionManagement from "@/components/SubscriptionManagement";
 import { AILab } from "@/components/admin/AILab";
 
-type AdminView = "cdr" | "users" | "usage" | "companies" | "departments" | "phones" | "ivr" | "subscriptions" | "ailab";
+type AdminView = "cdr" | "users" | "usage" | "companies" | "departments" | "phones" | "deskphones" | "ivr" | "subscriptions" | "ailab";
 
 const AdminDash = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -32,7 +33,7 @@ const AdminDash = () => {
   useEffect(() => {
     // Parse view from URL hash
     const hash = location.hash.replace("#", "");
-    if (hash && ["cdr", "users", "usage", "companies", "departments", "phones", "ivr", "subscriptions", "ailab"].includes(hash)) {
+    if (hash && ["cdr", "users", "usage", "companies", "departments", "phones", "deskphones", "ivr", "subscriptions", "ailab"].includes(hash)) {
       setActiveView(hash as AdminView);
     }
   }, [location.hash]);
@@ -120,6 +121,8 @@ const AdminDash = () => {
         return <DepartmentManagement />;
       case "phones":
         return <PhoneNumbersManagement />;
+      case "deskphones":
+        return <DeskPhonesManagement />;
       case "ivr":
         return <IVRConfiguration />;
       case "subscriptions":

@@ -22,6 +22,7 @@ export interface DeskPhoneRow {
   sip_password: string | null;
   label: string | null;
   is_active: boolean;
+  auto_record?: boolean;
   created_at: string;
 }
 

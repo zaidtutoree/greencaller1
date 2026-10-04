@@ -8,11 +8,12 @@ import {
   Phone,
   Settings2,
   CreditCard,
-  Bot
+  Bot,
+  Headset
 } from "lucide-react";
 import brandLogo from "@/assets/brand-logo.png";
 
-type AdminView = "cdr" | "users" | "usage" | "companies" | "departments" | "phones" | "ivr" | "subscriptions" | "ailab";
+type AdminView = "cdr" | "users" | "usage" | "companies" | "departments" | "phones" | "deskphones" | "ivr" | "subscriptions" | "ailab";
 
 interface AdminDashSidebarProps {
   activeView: AdminView;
@@ -26,6 +27,7 @@ const navItems: { id: AdminView; label: string; icon: React.ElementType }[] = [
   { id: "companies", label: "Companies", icon: Building2 },
   { id: "departments", label: "Departments", icon: Layers },
   { id: "phones", label: "Phone Numbers", icon: Phone },
+  { id: "deskphones", label: "Desk Phones", icon: Headset },
   { id: "ivr", label: "IVR Config", icon: Settings2 },
   { id: "subscriptions", label: "Subscriptions", icon: CreditCard },
   { id: "ailab", label: "AI Lab", icon: Bot },
