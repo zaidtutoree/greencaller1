@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { PhoneIncoming, PhoneOutgoing, Clock, Sparkles } from "lucide-react";
+import { Phone, PhoneIncoming, PhoneOutgoing, Clock, Sparkles } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { format } from "date-fns";
 import { CallSummaryDialog, CallSummaryTarget } from "@/components/CallSummaryDialog";
@@ -16,6 +16,8 @@ interface Call {
   duration: number;
   status: string;
   created_at: string;
+  /** Surface that handled the call: web | desktop | mobile | deskphone. */
+  device?: string | null;
 }
 
 interface RecordingLite {
@@ -187,8 +189,17 @@ const CallHistory = ({ userId, filterMissed, accountType }: CallHistoryProps) =>
                       )}
                     </div>
                     <div>
-                      <div className="font-semibold">
+                      <div className="font-semibold flex items-center gap-2">
                         {call.direction === "outbound" ? call.to_number : call.from_number}
+                        {call.device === "deskphone" && (
+                          <span
+                            className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
+                            title="Handled on the desk phone"
+                          >
+                            <Phone className="w-3 h-3" />
+                            Desk phone
+                          </span>
+                        )}
                       </div>
                       <div className="text-sm text-muted-foreground">
                         {format(new Date(call.created_at), "MMM d, yyyy - h:mm a")}

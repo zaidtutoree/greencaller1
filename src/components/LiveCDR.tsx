@@ -51,6 +51,8 @@ interface CDREntry {
   status: string | null;
   created_at: string | null;
   user_id: string | null;
+  /** Surface that handled the call: web | desktop | mobile | deskphone. */
+  device?: string | null;
   user_email?: string;
   user_name?: string;
 }
@@ -337,6 +339,11 @@ const LiveCDR = () => {
                     <TableCell className="flex items-center gap-2">
                       {getDirectionIcon(entry.direction, entry.status)}
                       {entry.from_number}
+                      {entry.device === "deskphone" && (
+                        <Badge variant="outline" className="text-[10px] font-normal" title="Handled on the desk phone">
+                          Desk phone
+                        </Badge>
+                      )}
                     </TableCell>
                     <TableCell>{entry.to_number}</TableCell>
                     <TableCell>{formatDuration(entry.duration)}</TableCell>

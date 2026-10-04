@@ -867,7 +867,11 @@ export const useTelnyxCall = ({ userId, assignedNumber, enabled = true }: UseTel
             ...(sipUsername ? { sip_username: sipUsername } : {}),
             ...(expiresAt ? { expires_at: expiresAt } : {}),
           })
-          .eq('user_id', userId);
+          .eq('user_id', userId)
+          // Heartbeat must only touch THIS device's row. Without the device_type
+          // filter it overwrote the user's MOBILE row with the web sip_username,
+          // so inbound calls dialled the wrong credential (2026-09-25).
+          .eq('device_type', 'web');
 
         if (error) {
           console.error('Heartbeat: Failed to update registration:', error);

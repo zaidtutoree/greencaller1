@@ -13,11 +13,19 @@ interface DialpadProps {
   accountType?: string;
   /** Tighter layout for narrow containers (Sidebar Mode's slide-out panel). */
   compact?: boolean;
+  /**
+   * The line the call shell is actually registered on. When provided it wins
+   * over this component's own lookup, so a mirrored surface (Sidebar Mode)
+   * can never show a different "Calling from" number than the window that
+   * owns the telephony session.
+   */
+  lineNumber?: string | null;
 }
 
-const Dialpad = ({ userId, onMakeCall, accountType, compact = false }: DialpadProps) => {
+const Dialpad = ({ userId, onMakeCall, accountType, compact = false, lineNumber }: DialpadProps) => {
   const [phoneNumber, setPhoneNumber] = useState("");
-  const [assignedNumber, setAssignedNumber] = useState<string | null>(null);
+  const [fetchedNumber, setFetchedNumber] = useState<string | null>(null);
+  const assignedNumber = lineNumber !== undefined ? lineNumber : fetchedNumber;
   const [provider, setProvider] = useState<string>("twilio");
   const [recordCall, setRecordCall] = useState(false);
   const [canMakeCalls, setCanMakeCalls] = useState(true);
@@ -62,6 +70,8 @@ const Dialpad = ({ userId, onMakeCall, accountType, compact = false }: DialpadPr
   useEffect(() => {
     const fetchAssignedNumber = async () => {
       if (!userId) return;
+      // Reset first so a previous account's number never lingers.
+      setFetchedNumber(null);
 
       const { data, error } = await supabase
         .from('phone_numbers')
@@ -76,7 +86,7 @@ const Dialpad = ({ userId, onMakeCall, accountType, compact = false }: DialpadPr
       }
 
       if (data) {
-        setAssignedNumber(data.phone_number);
+        setFetchedNumber(data.phone_number);
         setProvider(data.provider || 'twilio');
       }
     };

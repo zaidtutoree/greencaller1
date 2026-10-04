@@ -37,9 +37,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { UserPlus, Phone as PhoneIcon, RefreshCw, UserMinus, Trash2 } from "lucide-react";
+import { UserPlus, Phone as PhoneIcon, RefreshCw, UserMinus, Trash2, Headset } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
+import { DeskPhoneDialog } from "@/components/admin/DeskPhoneDialog";
 
 interface Profile {
   id: string;
@@ -68,6 +69,8 @@ const UserManagement = () => {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [phoneNumbers, setPhoneNumbers] = useState<PhoneNumber[]>([]);
   const [departments, setDepartments] = useState<Department[]>([]);
+  /** Number whose assigned user is getting a desk phone provisioned. */
+  const [deskPhoneTarget, setDeskPhoneTarget] = useState<PhoneNumber | null>(null);
   const [newPhoneNumber, setNewPhoneNumber] = useState("");
   const [selectedUser, setSelectedUser] = useState("");
   const [selectedPhone, setSelectedPhone] = useState("");
@@ -842,6 +845,17 @@ const UserManagement = () => {
                         </span>
                       </TableCell>
                       <TableCell className="text-right">
+                        {phone.assigned_to && phone.provider === "telnyx" && assignmentInfo.type !== "department" && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => setDeskPhoneTarget(phone)}
+                            title="Provision a physical desk phone for this user"
+                          >
+                            <Headset className="w-4 h-4 mr-2" />
+                            Desk phone
+                          </Button>
+                        )}
                         {phone.assigned_to && (
                           <Button
                             size="sm"
@@ -861,6 +875,18 @@ const UserManagement = () => {
           )}
         </CardContent>
       </Card>
+
+      <DeskPhoneDialog
+        open={!!deskPhoneTarget}
+        onOpenChange={(o) => !o && setDeskPhoneTarget(null)}
+        phone={deskPhoneTarget}
+        userName={
+          deskPhoneTarget
+            ? profiles.find((p) => p.id === deskPhoneTarget.assigned_to)?.full_name ||
+              profiles.find((p) => p.id === deskPhoneTarget.assigned_to)?.email
+            : undefined
+        }
+      />
     </div>
   );
 };
