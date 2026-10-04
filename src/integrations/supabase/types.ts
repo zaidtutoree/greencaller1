@@ -435,6 +435,51 @@ export type Database = {
           },
         ]
       }
+      desk_phones: {
+        Row: {
+          auto_record: boolean
+          created_at: string
+          id: string
+          is_active: boolean
+          label: string | null
+          phone_number_id: string | null
+          sip_password: string | null
+          sip_username: string
+          telnyx_connection_id: string
+          telnyx_credential_id: string | null
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          auto_record?: boolean
+          created_at?: string
+          id?: string
+          is_active?: boolean
+          label?: string | null
+          phone_number_id?: string | null
+          sip_password?: string | null
+          sip_username: string
+          telnyx_connection_id: string
+          telnyx_credential_id?: string | null
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          auto_record?: boolean
+          created_at?: string
+          id?: string
+          is_active?: boolean
+          label?: string | null
+          phone_number_id?: string | null
+          sip_password?: string | null
+          sip_username?: string
+          telnyx_connection_id?: string
+          telnyx_credential_id?: string | null
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       departments: {
         Row: {
           company_name: string

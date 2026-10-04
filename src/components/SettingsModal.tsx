@@ -1,14 +1,16 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
-import { User, Mic, Music, Clock, Slack } from "lucide-react";
+import { User, Mic, Music, Clock, Slack, Headset } from "lucide-react";
 import { ProfileSettings } from "@/components/ProfileSettings";
 import { AudioSettings } from "@/components/AudioSettings";
 import { RingtoneSettings } from "@/components/RingtoneSettings";
 import { OpeningHours } from "@/components/OpeningHours";
 import { SlackIntegration } from "@/components/SlackIntegration";
+import { DeskPhoneSettings } from "@/components/DeskPhoneSettings";
+import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
 
-type SettingsTab = "profile" | "audio" | "ringtone" | "hours" | "integrations";
+type SettingsTab = "profile" | "audio" | "ringtone" | "hours" | "integrations" | "deskphone";
 
 interface SettingsModalProps {
   open: boolean;
@@ -29,9 +31,31 @@ const BASE_TABS: { id: SettingsTab; label: string; icon: typeof User }[] = [
 
 export const SettingsModal = ({ open, onOpenChange, userId, onProfileSaved, isEnterprise }: SettingsModalProps) => {
   const [activeTab, setActiveTab] = useState<SettingsTab>("profile");
-  const TABS = isEnterprise
-    ? [...BASE_TABS, { id: "integrations" as SettingsTab, label: "Integrations", icon: Slack }]
-    : BASE_TABS;
+
+  // The Desk phone tab only exists for users whose number has a physical
+  // handset provisioned (desk_phones row). Cheap head-count query per open.
+  const [hasDeskPhone, setHasDeskPhone] = useState(false);
+  useEffect(() => {
+    if (!open || !userId) return;
+    let cancelled = false;
+    supabase
+      .from("desk_phones")
+      .select("id", { count: "exact", head: true })
+      .eq("user_id", userId)
+      .eq("is_active", true)
+      .then(({ count }) => {
+        if (!cancelled) setHasDeskPhone((count ?? 0) > 0);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, userId]);
+
+  const TABS = [
+    ...BASE_TABS,
+    ...(hasDeskPhone ? [{ id: "deskphone" as SettingsTab, label: "Desk Phone", icon: Headset }] : []),
+    ...(isEnterprise ? [{ id: "integrations" as SettingsTab, label: "Integrations", icon: Slack }] : []),
+  ];
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -95,6 +119,16 @@ export const SettingsModal = ({ open, onOpenChange, userId, onProfileSaved, isEn
                   Optionally send calls to voicemail outside your opening hours.
                 </p>
                 <OpeningHours userId={userId} />
+              </div>
+            )}
+            {activeTab === "deskphone" && (
+              <div className="p-6">
+                <h2 className="text-2xl font-display font-semibold mb-1">Desk Phone</h2>
+                <p className="text-sm text-muted-foreground mb-6">
+                  Your physical handset rings together with the apps on your number. Choose whether its
+                  calls are recorded.
+                </p>
+                <DeskPhoneSettings userId={userId} />
               </div>
             )}
             {activeTab === "integrations" && (
