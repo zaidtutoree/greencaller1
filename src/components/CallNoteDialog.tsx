@@ -19,6 +19,10 @@ export interface CallNoteSession {
   phoneNumber?: string;
   contactName?: string;
   direction?: "inbound" | "outbound";
+  /** Present when opened from Call History: links the note to that row. */
+  callHistoryId?: string;
+  /** Shown instead of "Current call" when noting a past call. */
+  whenLabel?: string;
 }
 
 interface CallNoteDialogProps {
@@ -66,6 +70,7 @@ export const CallNoteDialog = ({ open, onOpenChange, userId, session, duration }
       contactName: session.contactName,
       direction: session.direction,
       duration,
+      callHistoryId: session.callHistoryId,
     });
     setSaving(false);
     if (showToast) toast({ title: "Note saved" });
@@ -101,6 +106,9 @@ export const CallNoteDialog = ({ open, onOpenChange, userId, session, duration }
             </Badge>
           )}
           <span className="font-medium truncate">{title}</span>
+          {session?.whenLabel && (
+            <span className="ml-auto text-xs text-muted-foreground shrink-0">{session.whenLabel}</span>
+          )}
         </div>
 
         <Textarea

@@ -24,6 +24,33 @@ export interface SaveCallNoteParams {
   contactName?: string | null;
   direction?: "inbound" | "outbound" | null;
   duration?: number | null;
+  /** Set when the note is written from Call History, so it stays linked to that row. */
+  callHistoryId?: string | null;
+}
+
+/**
+ * Find the note that belongs to a Call History row, if one exists already.
+ * Notes taken DURING a call are keyed by a client-side call_ref and carry no
+ * call_history_id, so match them by the other party's number and a time window
+ * around the call; notes written FROM history carry the id directly.
+ */
+export function findNoteForHistoryCall(
+  notes: CallNote[],
+  call: { id: string; from_number: string; to_number: string; direction: string; created_at: string },
+): CallNote | undefined {
+  const byId = notes.find((n) => n.call_history_id === call.id);
+  if (byId) return byId;
+  const other = call.direction === "outbound" ? call.to_number : call.from_number;
+  const digits = (s: string | null | undefined) => (s || "").replace(/\D/g, "").slice(-9);
+  const want = digits(other);
+  if (!want) return undefined;
+  const t = new Date(call.created_at).getTime();
+  return notes.find(
+    (n) =>
+      !n.call_history_id &&
+      digits(n.phone_number) === want &&
+      Math.abs(new Date(n.created_at).getTime() - t) < 10 * 60 * 1000,
+  );
 }
 
 /** Fetch the existing note for a call by its stable client-side ref. */
@@ -65,6 +92,7 @@ export async function saveCallNote(params: SaveCallNoteParams): Promise<CallNote
         contact_name: params.contactName ?? null,
         direction: params.direction ?? null,
         duration: params.duration ?? 0,
+        ...(params.callHistoryId ? { call_history_id: params.callHistoryId } : {}),
       },
       { onConflict: "user_id,call_ref" }
     )

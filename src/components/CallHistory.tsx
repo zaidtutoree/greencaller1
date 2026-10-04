@@ -2,10 +2,13 @@ import { useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Phone, PhoneIncoming, PhoneOutgoing, Clock, Sparkles } from "lucide-react";
+import { Phone, PhoneIncoming, PhoneOutgoing, Clock, Sparkles, NotebookPen } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { format } from "date-fns";
 import { CallSummaryDialog, CallSummaryTarget } from "@/components/CallSummaryDialog";
+import { CallNoteDialog, type CallNoteSession } from "@/components/CallNoteDialog";
+import { findNoteForHistoryCall, useCallNotes } from "@/hooks/useCallNotes";
+import { cn } from "@/lib/utils";
 
 interface Call {
   id: string;
@@ -43,6 +46,32 @@ const CallHistory = ({ userId, filterMissed, accountType }: CallHistoryProps) =>
   const [summaryOpen, setSummaryOpen] = useState(false);
 
   const canUseSummary = accountType === "premium" || accountType === "enterprise";
+  // Notes share the premium/enterprise gate used for the in-call note button.
+  const canUseNotes = canUseSummary;
+
+  // Existing notes (live via realtime) so each row can show whether it already
+  // has one, and so re-opening a call edits that same note instead of a second.
+  const { notes } = useCallNotes(canUseNotes ? userId : undefined);
+  const [noteSession, setNoteSession] = useState<CallNoteSession | null>(null);
+  const [noteDuration, setNoteDuration] = useState<number>(0);
+  const [noteOpen, setNoteOpen] = useState(false);
+
+  const openNote = (call: Call) => {
+    const existing = findNoteForHistoryCall(notes, call);
+    const other = call.direction === "outbound" ? call.to_number : call.from_number;
+    setNoteSession({
+      // Reuse the in-call note's ref when there is one; otherwise key the note
+      // to the history row so repeated edits always land on the same note.
+      callRef: existing?.call_ref ?? `hist:${call.id}`,
+      phoneNumber: other,
+      contactName: existing?.contact_name ?? undefined,
+      direction: call.direction === "outbound" ? "outbound" : "inbound",
+      callHistoryId: call.id,
+      whenLabel: format(new Date(call.created_at), "MMM d, h:mm a"),
+    });
+    setNoteDuration(existing?.duration ?? call.duration ?? 0);
+    setNoteOpen(true);
+  };
 
   useEffect(() => {
     fetchCalls();
@@ -207,6 +236,21 @@ const CallHistory = ({ userId, filterMissed, accountType }: CallHistoryProps) =>
                     </div>
                   </div>
                   <div className="flex items-center gap-3">
+                    {canUseNotes && (() => {
+                      const hasNote = !!findNoteForHistoryCall(notes, call);
+                      return (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className={cn("gap-1.5", hasNote && "border-primary/40 text-primary")}
+                          onClick={() => openNote(call)}
+                          title={hasNote ? "View or edit the note for this call" : "Add a note about this call"}
+                        >
+                          <NotebookPen className="w-4 h-4" />
+                          <span className="hidden sm:inline">{hasNote ? "Note" : "Add note"}</span>
+                        </Button>
+                      );
+                    })()}
                     {recording && (
                       <Button
                         variant="outline"
@@ -243,6 +287,15 @@ const CallHistory = ({ userId, filterMissed, accountType }: CallHistoryProps) =>
         onOpenChange={setSummaryOpen}
         target={summaryTarget}
       />
+      {canUseNotes && (
+        <CallNoteDialog
+          open={noteOpen}
+          onOpenChange={setNoteOpen}
+          userId={userId}
+          session={noteSession}
+          duration={noteDuration}
+        />
+      )}
     </Card>
   );
 };
