@@ -117,7 +117,12 @@ export function AppSidebar({ userEmail }: AppSidebarProps) {
   }, []);
 
   const handleLogout = async () => {
-    await supabase.auth.signOut();
+    // scope: 'local' — sign out this device only. The supabase-js default
+    // 'global' scope revokes the user's mobile sessions too, bypassing the
+    // mobile app's own logout cleanup (device_tokens / SIP credential), so the
+    // phone kept ringing for an account it could no longer authenticate as
+    // (2026-10-20).
+    await supabase.auth.signOut({ scope: 'local' });
     toast({ title: "Logged out successfully" });
     navigate("/auth");
   };
