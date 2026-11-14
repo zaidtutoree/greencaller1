@@ -16,3 +16,4 @@
 - [Sidebar Activity & Notes](project_sidebar_activity_notes.md) — Sidebar Activity (Recents|Recordings) + Notes panels, compact Teammates; CallNotes/Contacts compact props
 - [Desk Phone (Yealink)](project_deskphone.md) — Separate Telnyx credential connection per desk phone (ids), remaining DB/inbound/history plan, never touch webrtc registrations
 - [iOS Push Tokens & Logout](project_ios_push_tokens.md) — Stale device_tokens made iPhone ring for logged-out account; logout hook + wakeIOS guard; never expire registration rows on logout (30-day cred cache); Greencallerexpoapp is the live mobile repo
+- [CRM page](project_crm.md) — /crm: CSV upload → editable grid in crm_sheets (jsonb); single-account access via is_crm_user() RLS

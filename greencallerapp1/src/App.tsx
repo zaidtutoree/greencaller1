@@ -9,6 +9,7 @@ import Admin from "./pages/Admin";
 import AdminAuth from "./pages/AdminAuth";
 import AdminDash from "./pages/AdminDash";
 import ControlDashboard from "./pages/ControlDashboard";
+import Crm from "./pages/Crm";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -28,6 +29,8 @@ const App = () => (
           <Route path="/admindash" element={<AdminDash />} />
           {/* Company-admin dashboard: one company's users, IVR and AI assistants. */}
           <Route path="/control" element={<ControlDashboard />} />
+          {/* Cold-calling CRM: CSV upload + editable table, single-account access. */}
+          <Route path="/crm" element={<Crm />} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           <Route path="*" element={<NotFound />} />
         </Routes>
