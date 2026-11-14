@@ -1,0 +1,5 @@
+# The web app lives in a subfolder of this monorepo.
+[build]
+  base    = "greencallerapp1"
+  command = "npm run build"
+  publish = "dist"

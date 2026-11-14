@@ -129,34 +129,21 @@ serve(async (req) => {
         );
       }
 
-      // Insert call history for the user
-      await supabaseInsert('call_history', {
-        user_id: menuOption.user_id,
-        call_sid: callSid,
-        from_number: fromNumber,
-        to_number: phones[0].phone_number,
-        direction: 'inbound',
-        status: 'ringing',
-      });
-
-      // Get user's WebRTC registration for SIP URI
-      const regs = await supabaseQuery(
-        `telnyx_webrtc_registrations?user_id=eq.${menuOption.user_id}&select=sip_username&limit=1`
-      );
-
-      const statusCallbackUrl = `${supabaseUrl}/functions/v1/telnyx-call-events`;
-      const sipTarget = (regs && regs.length > 0 && regs[0].sip_username)
-        ? `<Sip>sip:${regs[0].sip_username}@sip.telnyx.com</Sip>`
-        : `<Number>${phones[0].phone_number}</Number>`;
+      // Hand the call to telnyx-incoming-call's user-routing path with the
+      // user's own number as the target. That path rings EVERY endpoint the
+      // user has (desktop, mobile w/ wake push, desk phone) and inserts the
+      // call_history row. Previously this dialled ONE webrtc registration row
+      // (any device) and nothing else, so desk-phone-only users never rang and
+      // the caller was dropped after a short ring.
+      const targetNumber = phones[0].phone_number;
+      const redirectUrl = `${supabaseUrl}/functions/v1/telnyx-incoming-call?ivrTo=${encodeURIComponent(targetNumber)}`;
+      console.log('Redirecting IVR selection to user routing:', redirectUrl);
 
       return new Response(
         `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say voice="Polly.Amy-Neural">Thank you. Connecting you now.</Say>
-  <Dial callerId="${fromNumber}" timeout="30" statusCallback="${statusCallbackUrl}" statusCallbackEvent="initiated ringing answered completed">
-    ${sipTarget}
-  </Dial>
-  <Hangup/>
+  <Redirect method="POST">${redirectUrl}</Redirect>
 </Response>`,
         { headers: { 'Content-Type': 'application/xml' } }
       );

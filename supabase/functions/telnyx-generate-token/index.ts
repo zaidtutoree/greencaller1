@@ -62,7 +62,24 @@ serve(async (req) => {
       );
     }
 
-    const expiresAt = new Date(Date.now() + 1000 * 60 * 60); // 1 hour
+    // 30 days. Was 1 hour, which meant that one hour after the app last ran, the
+    // credential was dead — telnyx-incoming-call then logged
+    //   "Per-user mobile SIP credential is expired ... - skipping mobile endpoint"
+    //   "No SIP endpoints available, routing to voicemail"
+    // and inbound calls went straight to voicemail without ever dialling. The VoIP
+    // wake push still woke the app (it re-minted ~2s later), but far too late: the
+    // TeXML had already been returned. Verified live 2026-09-09 11:31.
+    //
+    // MUST STAY IN LOCKSTEP WITH CRED_CACHE_TTL_MS in lib/telnyxService.ts.
+    // The app short-circuits on its local cache and only calls this function once
+    // that cache lapses. If the cache expires BEFORE this value, a push-woken app
+    // mints a new credential while telnyx-incoming-call is still dialling the old
+    // one from the registrations row — the credential-rotation mismatch documented
+    // in .claude/BACKGROUND_ANSWER_CONNECT.md §4, where the INVITE never reaches the
+    // device. Keeping the two equal means both lapse together, so the app re-mints
+    // on the next launch exactly when the row expires, and there is no window where
+    // the dialled credential differs from the registered one.
+    const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * 30); // 30 days
     const expiresAtISO = expiresAt.toISOString();
 
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
@@ -208,7 +225,103 @@ serve(async (req) => {
     let connectionId: string | null = null;
     let connections: any[] = [];
 
-    if (preferredConnectionId) {
+    // Step 0 (desktop/web only): use a dedicated credential connection that
+    // has a webhook URL. Telnyx only issues Call Control IDs — and only fires
+    // call.initiated/answered/hangup — for calls on a connection with a
+    // webhook; without one the WebRTC SDK gets telnyx_leg_id/session_id but
+    // never telnyx_call_control_id, so record_start can't target the call
+    // (Telnyx 90015). Mobile keeps the plain connection so its iOS
+    // background-call flow is untouched. Override with TELNYX_WEB_CONNECTION_ID.
+    if (deviceType === "web") {
+      const WEB_CC_CONNECTION_NAME = "Greencaller Desktop (Call Control)";
+      const webhookUrl = `${supabaseUrl}/functions/v1/telnyx-call-events`;
+      const telnyxHeaders = {
+        Authorization: `Bearer ${telnyxApiKey}`,
+        "Content-Type": "application/json",
+      };
+
+      const preferredWebId = Deno.env.get("TELNYX_WEB_CONNECTION_ID") || null;
+      let webConn: any = null;
+
+      if (preferredWebId) {
+        const single = await telnyxFetchJson(`https://api.telnyx.com/v2/credential_connections/${preferredWebId}`, {
+          method: "GET",
+          headers: telnyxHeaders,
+        });
+        if (single.ok && single.json?.data?.id) {
+          webConn = single.json.data;
+        } else {
+          console.warn("TELNYX_WEB_CONNECTION_ID invalid or not accessible; falling back to lookup by name.");
+        }
+      }
+
+      if (!webConn) {
+        const list = await telnyxFetchJson("https://api.telnyx.com/v2/credential_connections?page[size]=100", {
+          method: "GET",
+          headers: telnyxHeaders,
+        });
+        if (list.ok) {
+          webConn = ((list.json as TelnyxListResponse<any>)?.data || []).find(
+            (c: any) => c?.connection_name === WEB_CC_CONNECTION_NAME,
+          ) || null;
+        } else {
+          console.error("Failed to list credential connections for web lookup:", list.text);
+        }
+      }
+
+      if (!webConn) {
+        console.log("Creating dedicated web credential connection with webhook:", WEB_CC_CONNECTION_NAME);
+        const outboundProfileId = await getOrCreateOutboundProfile();
+        const created = await telnyxFetchJson("https://api.telnyx.com/v2/credential_connections", {
+          method: "POST",
+          headers: telnyxHeaders,
+          body: JSON.stringify({
+            connection_name: WEB_CC_CONNECTION_NAME,
+            user_name: `gcweb${Date.now()}`, // Telnyx: letters and numbers only
+            password: crypto.randomUUID().replace(/-/g, "").substring(0, 24),
+            sip_uri_calling_preference: "unrestricted",
+            default_on_hold_comfort_noise_enabled: true,
+            webhook_event_url: webhookUrl,
+            webhook_event_failover_url: webhookUrl,
+            webhook_api_version: "2",
+            webhook_timeout_secs: 25,
+            ...(outboundProfileId ? { outbound: { outbound_voice_profile_id: outboundProfileId } } : {}),
+          }),
+        });
+        if (created.ok && created.json?.data?.id) {
+          webConn = created.json.data;
+          console.log("Created web credential connection:", webConn.id);
+        } else {
+          console.error("Failed to create web credential connection; falling back to shared connection:", created.text);
+        }
+      }
+
+      if (webConn) {
+        // Keep the webhook pointed at us and the outbound profile attached
+        // (the profile is what lets the connection dial PSTN numbers).
+        const fixes: Record<string, unknown> = {};
+        if (webConn.webhook_event_url !== webhookUrl) fixes.webhook_event_url = webhookUrl;
+        if (webConn.webhook_event_failover_url !== webhookUrl) fixes.webhook_event_failover_url = webhookUrl;
+        if (webConn.webhook_api_version !== "2") fixes.webhook_api_version = "2";
+        if (!webConn?.outbound?.outbound_voice_profile_id) {
+          const outboundProfileId = await getOrCreateOutboundProfile();
+          if (outboundProfileId) fixes.outbound = { outbound_voice_profile_id: outboundProfileId };
+        }
+        if (Object.keys(fixes).length > 0) {
+          console.log("Patching web credential connection:", Object.keys(fixes));
+          const patch = await telnyxFetchJson(`https://api.telnyx.com/v2/credential_connections/${webConn.id}`, {
+            method: "PATCH",
+            headers: telnyxHeaders,
+            body: JSON.stringify(fixes),
+          });
+          if (!patch.ok) console.error("Failed to patch web credential connection:", patch.text);
+        }
+        connectionId = webConn.id;
+        console.log("Using dedicated web credential connection:", connectionId);
+      }
+    }
+
+    if (!connectionId && preferredConnectionId) {
       console.log("TELNYX_CONNECTION_ID provided; validating:", preferredConnectionId);
       const single = await telnyxFetchJson(`https://api.telnyx.com/v2/credential_connections/${preferredConnectionId}`, {
         method: "GET",

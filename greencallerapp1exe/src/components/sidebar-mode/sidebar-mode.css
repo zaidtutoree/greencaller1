@@ -1,0 +1,222 @@
+/**
+ * Sidebar Mode — dark glass chrome for the docked strip + slide-out panel.
+ *
+ * Palette is the existing GreenCaller one:
+ *   deep forest green  #1A6B3C   (strip / panel chrome)
+ *   bright green       #22C55E   (active icon, CTAs, badges)
+ *   charcoal           #333333   (text on the light panel body)
+ *
+ * The window is frameless + transparent, so the page itself must not paint a
+ * background — everything visible is drawn by .gc-sb-strip / .gc-sb-panel, and
+ * the shadow is CSS (hasShadow:false on the BrowserWindow) so the rounded
+ * corners stay clean on Windows instead of rendering a black box.
+ */
+
+html.gc-sidebar-window,
+html.gc-sidebar-window body,
+html.gc-sidebar-window #root {
+  background: transparent !important;
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+html.gc-sidebar-window body {
+  /* Nothing in the strip should be text-selectable or rubber-band scrollable. */
+  user-select: none;
+  -webkit-user-select: none;
+  overscroll-behavior: none;
+}
+
+:root {
+  --gc-sb-forest: 26 107 60; /* #1A6B3C */
+  --gc-sb-green: 34 197 94; /* #22C55E */
+  --gc-sb-ink: 51 51 51; /* #333333 */
+  --gc-sb-radius: 18px;
+}
+
+/* ── Drag regions ─────────────────────────────────────────────────────── */
+
+.gc-sb-drag {
+  -webkit-app-region: drag;
+}
+
+/* `position` is load-bearing, not cosmetic: on Windows a statically positioned
+   no-drag child inside a drag region still has its clicks swallowed by the
+   drag region. Giving it its own positioned box is what lets the press land.
+   (The strip's .gc-sb-icon buttons already work for exactly this reason.) */
+.gc-sb-nodrag {
+  -webkit-app-region: no-drag;
+  position: relative;
+  z-index: 1;
+}
+
+/* ── Glass surfaces ───────────────────────────────────────────────────── */
+
+.gc-sb-glass {
+  background: linear-gradient(
+    160deg,
+    rgb(var(--gc-sb-forest) / 0.82) 0%,
+    rgb(18 32 26 / 0.88) 100%
+  );
+  backdrop-filter: blur(22px) saturate(140%);
+  -webkit-backdrop-filter: blur(22px) saturate(140%);
+  border: 1px solid rgb(255 255 255 / 0.14);
+  box-shadow:
+    0 18px 48px -12px rgb(0 0 0 / 0.55),
+    inset 0 1px 0 0 rgb(255 255 255 / 0.08);
+}
+
+.gc-sb-strip {
+  border-radius: var(--gc-sb-radius);
+}
+
+.gc-sb-panel {
+  border-radius: var(--gc-sb-radius);
+  overflow: hidden;
+}
+
+/* The panel body hosts the app's existing (light-surface) components, so it
+   keeps the normal background token rather than going dark — charcoal text on
+   a light surface, exactly as the design system specifies. */
+.gc-sb-panel-body {
+  background: hsl(var(--background));
+  color: rgb(var(--gc-sb-ink));
+}
+
+/* ── Strip buttons ────────────────────────────────────────────────────── */
+
+.gc-sb-icon {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  color: rgb(255 255 255 / 0.72);
+  transition:
+    background-color 0.16s ease,
+    color 0.16s ease,
+    transform 0.12s ease;
+}
+
+.gc-sb-icon:hover {
+  background: rgb(255 255 255 / 0.12);
+  color: #fff;
+}
+
+.gc-sb-icon:active {
+  transform: scale(0.92);
+}
+
+.gc-sb-icon[data-active="true"] {
+  background: rgb(var(--gc-sb-green) / 0.18);
+  color: rgb(var(--gc-sb-green));
+}
+
+/* Small green notification dot, mirroring the reference's red dot. */
+.gc-sb-dot {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 8px;
+  height: 8px;
+  border-radius: 9999px;
+  background: rgb(var(--gc-sb-green));
+  box-shadow: 0 0 0 2px rgb(18 32 26 / 0.9);
+}
+
+/* Incoming call: pulse the Calls icon in bright green. */
+.gc-sb-pulse {
+  animation: gc-sb-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes gc-sb-pulse {
+  0%,
+  100% {
+    background: rgb(var(--gc-sb-green) / 0.18);
+    box-shadow: 0 0 0 0 rgb(var(--gc-sb-green) / 0.55);
+    color: rgb(var(--gc-sb-green));
+  }
+  50% {
+    background: rgb(var(--gc-sb-green) / 0.34);
+    box-shadow: 0 0 0 7px rgb(var(--gc-sb-green) / 0);
+    color: #fff;
+  }
+}
+
+/* ── Panel open / close ───────────────────────────────────────────────── */
+
+.gc-sb-panel-enter {
+  animation: gc-sb-slide-in 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.gc-sb-panel-exit {
+  animation: gc-sb-slide-out 150ms cubic-bezier(0.4, 0, 1, 1) both;
+}
+
+@keyframes gc-sb-slide-in {
+  from {
+    opacity: 0;
+    transform: translate(var(--gc-sb-slide-x, 0), var(--gc-sb-slide-y, 0)) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translate(0, 0) scale(1);
+  }
+}
+
+@keyframes gc-sb-slide-out {
+  from {
+    opacity: 1;
+    transform: translate(0, 0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translate(var(--gc-sb-slide-x, 0), var(--gc-sb-slide-y, 0)) scale(0.985);
+  }
+}
+
+/* The icon rail scrolls only if a very long tab set overflows — never with a
+   visible scrollbar, which would break the slim strip's silhouette. */
+.gc-sb-rail {
+  scrollbar-width: none;
+}
+
+.gc-sb-rail::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+/* Slimmer scrollbars inside the narrow panel. */
+.gc-sb-panel-body ::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+/* ── Notices ──────────────────────────────────────────────────────────── */
+
+/* The app-wide toast viewport (Radix <ol role="region">) is suppressed in the
+   sidebar window: a 420px toast cannot fit the 56px strip and ends up sliced
+   off over the strip buttons with an unreachable close button. SidebarApp
+   renders the newest toast as a compact .gc-sb-notice inside the open panel
+   instead. */
+html.gc-sidebar-window ol[role="region"] {
+  display: none !important;
+}
+
+.gc-sb-notice {
+  animation: gc-sb-notice-in 160ms ease-out;
+}
+
+@keyframes gc-sb-notice-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

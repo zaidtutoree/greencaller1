@@ -13,7 +13,10 @@ serve(async (req) => {
   }
 
   try {
-    const { recordingId } = await req.json();
+    // `save` (default true): persist the transcript to call_recordings.transcription.
+    // The AI-summary flow passes save=false so it can transcribe internally without
+    // making the transcript visible in the Recordings tab.
+    const { recordingId, save = true } = await req.json();
 
     if (!recordingId) {
       throw new Error('Recording ID is required');
@@ -34,13 +37,42 @@ serve(async (req) => {
       throw new Error('Recording not found');
     }
 
-    // Download the audio file
-    const audioUrl = recording.recording_url;
-    console.log('Downloading audio from:', audioUrl);
+    // Download the audio file.
+    // Telnyx stores recordings as presigned S3 URLs that expire, so the saved
+    // recording_url is usually dead for older calls. Resolve a FRESH download
+    // URL from the Telnyx API via recording_sid first (same as proxy-recording),
+    // then fall back to the stored URL for very recent recordings.
+    let audioResponse: Response | null = null;
+    const telnyxApiKey = Deno.env.get('TELNYX_API_KEY');
 
-    const audioResponse = await fetch(audioUrl);
-    if (!audioResponse.ok) {
-      throw new Error('Failed to download audio file');
+    if (recording.recording_sid && telnyxApiKey) {
+      console.log('Resolving fresh download URL from Telnyx, sid:', recording.recording_sid);
+      const apiResponse = await fetch(
+        `https://api.telnyx.com/v2/recordings/${recording.recording_sid}`,
+        { headers: { 'Authorization': `Bearer ${telnyxApiKey}` } }
+      );
+      if (apiResponse.ok) {
+        const details = await apiResponse.json();
+        const freshUrl = details?.data?.download_urls?.mp3 || details?.data?.recording_urls?.mp3;
+        if (freshUrl) {
+          const fresh = await fetch(freshUrl);
+          if (fresh.ok) audioResponse = fresh;
+          else console.log('Fresh URL fetch failed:', fresh.status);
+        }
+      } else {
+        console.log('Telnyx recordings API returned:', apiResponse.status);
+      }
+    }
+
+    // Fallback: the stored URL (works only if still unexpired).
+    if (!audioResponse) {
+      console.log('Falling back to stored recording_url');
+      const direct = await fetch(recording.recording_url);
+      if (direct.ok) audioResponse = direct;
+    }
+
+    if (!audioResponse || !audioResponse.ok) {
+      throw new Error('Failed to download audio file (recording URL expired and no fresh URL available)');
     }
 
     const audioBlob = await audioResponse.blob();
@@ -207,14 +239,17 @@ serve(async (req) => {
 
     console.log('Final transcription:', formattedTranscription);
 
-    // Update recording with formatted transcription
-    const { error: updateError } = await supabase
-      .from('call_recordings')
-      .update({ transcription: formattedTranscription })
-      .eq('id', recordingId);
+    // Update recording with formatted transcription (unless the caller asked
+    // us not to persist it — e.g. the AI-summary flow transcribing internally).
+    if (save !== false) {
+      const { error: updateError } = await supabase
+        .from('call_recordings')
+        .update({ transcription: formattedTranscription })
+        .eq('id', recordingId);
 
-    if (updateError) {
-      throw new Error('Failed to save transcription');
+      if (updateError) {
+        throw new Error('Failed to save transcription');
+      }
     }
 
     return new Response(

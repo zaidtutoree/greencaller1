@@ -1,0 +1,18 @@
+- [Call Queue Implementation](project_call_queue_implementation.md) — How department call queue, hangup detection, and Take Call pickup work
+- [Recording Implementation](project_recording_implementation.md) — How recording works with WebRTC SDK calls, Call Control ID resolution
+- [Project Structure](project_structure.md) — Folder layout, deployment workflow, frontend sync rules for web+exe
+- [Subscription Billing](project_subscription_billing.md) — Stripe subscriptions, trial overages, monthly overages, what works and what failed
+- [Exe Taskbar Icon & Call PiP](project_exe_taskbar_icon_and_pip.md) — Why taskbar showed Electron icon (ICO must be BMP not all-PNG) + native floating call card
+- [Call Notes](project_call_notes.md) — Per-call notes (premium/enterprise): call_notes table keyed by client call_ref, note button in call UI + PiP, Notes tab
+- [AI Call Summary](project_ai_call_summary.md) — Summary button in Call History; summarize-call edge fn (gpt-5.4-nano) off recording transcript; needs OPENAI_API_KEY secret
+- [Settings Modal](project_settings_modal.md) — Tabbed Settings modal (Profile/Audio/Ringtone); 10 ringtones; mic/speaker pickers; where each account type opens it
+- [Contacts](project_contacts.md) — Personal contacts (user_contacts) synced with mobile; enterprise Contacts/Teammates toggle; basic/premium Contacts tab
+- [AI Lab & AI Assistant](project_ai_lab.md) — Telnyx AI Assistant integration; admin AI Lab tab creates/assigns assistants w/ dedicated numbers (separate call architecture); user AI Assistant tab w/ stats
+- [Opening Hours](project_opening_hours.md) — Settings tab (all users); out-of-hours calls → voicemail w/ custom message; guarded telnyx-incoming-call integration
+- [Slack Integration](project_slack_integration.md) — Per-company OAuth connect (Phase 1 done); Integrations tab in Settings (enterprise); planned missed-call DMs + /gcall click-to-call
+- [Sidebar Mode](project_sidebar_mode.md) — Docked always-on-top strip + panels; two windows but one SIP registration, and why
+- [Recording — outbound 90015 root cause & fix](project_recording_stale_id.md) — SIP connection w/o webhook issues no Call Control IDs; desktop-only CC connection + active_calls for on-net calls; expo-vs-greencaller1 TTL trap
+- [Control Dashboard](project_control_dashboard.md) — /control company-admin dashboard: user/IVR/AI cards, per-user analytics/recordings/notes/departments; RLS helpers is_company_admin_for/of
+- [Sidebar Activity & Notes](project_sidebar_activity_notes.md) — Sidebar Activity (Recents|Recordings) + Notes panels, compact Teammates; CallNotes/Contacts compact props
+- [Desk Phone (Yealink)](project_deskphone.md) — Separate Telnyx credential connection per desk phone (ids), remaining DB/inbound/history plan, never touch webrtc registrations
+- [iOS Push Tokens & Logout](project_ios_push_tokens.md) — Stale device_tokens made iPhone ring for logged-out account; logout hook + wakeIOS guard; never expire registration rows on logout (30-day cred cache); Greencallerexpoapp is the live mobile repo

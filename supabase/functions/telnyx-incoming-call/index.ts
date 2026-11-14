@@ -5,6 +5,325 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
+// ─── APNs VoIP push (inlined to avoid edge-function shared-folder issues) ─────
+const TEXT_ENCODER = new TextEncoder();
+let cachedJwt: { token: string; expires: number } | null = null;
+
+function base64UrlEncode(input: ArrayBuffer | string): string {
+  const bytes = typeof input === 'string' ? TEXT_ENCODER.encode(input) : new Uint8Array(input);
+  let str = '';
+  for (let i = 0; i < bytes.byteLength; i++) str += String.fromCharCode(bytes[i]);
+  return btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+async function importApnsKey(pem: string): Promise<CryptoKey> {
+  const cleaned = pem
+    .replace(/-----BEGIN PRIVATE KEY-----/, '')
+    .replace(/-----END PRIVATE KEY-----/, '')
+    .replace(/\s+/g, '');
+  const binary = Uint8Array.from(atob(cleaned), (c) => c.charCodeAt(0));
+  return await crypto.subtle.importKey(
+    'pkcs8',
+    binary,
+    { name: 'ECDSA', namedCurve: 'P-256' },
+    false,
+    ['sign']
+  );
+}
+
+async function getApnsJwt(): Promise<string> {
+  const now = Math.floor(Date.now() / 1000);
+  if (cachedJwt && cachedJwt.expires > now + 60) return cachedJwt.token;
+
+  const keyPem = Deno.env.get('APNS_AUTH_KEY');
+  const keyId = Deno.env.get('APNS_KEY_ID');
+  const teamId = Deno.env.get('APNS_TEAM_ID');
+  if (!keyPem || !keyId || !teamId) {
+    throw new Error('APNS env vars missing (APNS_AUTH_KEY, APNS_KEY_ID, APNS_TEAM_ID)');
+  }
+
+  const header = base64UrlEncode(JSON.stringify({ alg: 'ES256', kid: keyId, typ: 'JWT' }));
+  const claims = base64UrlEncode(JSON.stringify({ iss: teamId, iat: now }));
+  const signingInput = `${header}.${claims}`;
+
+  const key = await importApnsKey(keyPem);
+  const sig = await crypto.subtle.sign(
+    { name: 'ECDSA', hash: { name: 'SHA-256' } },
+    key,
+    TEXT_ENCODER.encode(signingInput)
+  );
+  const token = `${signingInput}.${base64UrlEncode(sig)}`;
+  cachedJwt = { token, expires: now + 50 * 60 };
+  return token;
+}
+
+async function sendVoIPPush(opts: {
+  deviceToken: string;
+  environment: 'sandbox' | 'production';
+  payload: Record<string, unknown>;
+}): Promise<{ ok: boolean; status: number; body: string; apnsId?: string }> {
+  const bundleId = Deno.env.get('APNS_BUNDLE_ID') || 'com.greencaller.app';
+  const jwt = await getApnsJwt();
+  const host = opts.environment === 'sandbox'
+    ? 'https://api.sandbox.push.apple.com'
+    : 'https://api.push.apple.com';
+  const url = `${host}/3/device/${opts.deviceToken}`;
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `bearer ${jwt}`,
+      'apns-topic': `${bundleId}.voip`,
+      'apns-push-type': 'voip',
+      'apns-priority': '10',
+      'apns-expiration': '0',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(opts.payload),
+  });
+
+  return {
+    ok: res.ok,
+    status: res.status,
+    body: await res.text(),
+    apnsId: res.headers.get('apns-id') || undefined,
+  };
+}
+// ──────────────────────────────────────────────────────────────────────────────
+
+// Wake an iOS device by sending a VoIP push directly to APNs.
+// Returns true if push was attempted (regardless of APNs response).
+async function wakeIOSDevice(userId: string, callContext: {
+  callSid: string;
+  fromNumber: string;
+  toNumber: string;
+  callerName?: string;
+}): Promise<boolean> {
+  try {
+    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+    const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+
+    // Look up the most recent iOS push token for this user
+    // Guard: only wake a phone that still holds a live mobile credential. A
+    // device_tokens row can outlive the login that created it (logout never
+    // used to delete it), and a push alone makes CallKit ring — so without this
+    // check a logged-out or re-assigned iPhone kept ringing for the old
+    // account's number. Mirrors the mobile-endpoint expiry check below.
+    const regGuardUrl = `${supabaseUrl}/rest/v1/telnyx_webrtc_registrations?user_id=eq.${encodeURIComponent(userId)}&device_type=eq.mobile&select=expires_at&limit=1`;
+    const regGuardRes = await fetch(regGuardUrl, {
+      headers: { 'apikey': supabaseKey, 'Authorization': `Bearer ${supabaseKey}` },
+    });
+    if (regGuardRes.ok) {
+      const regRows = await regGuardRes.json();
+      const reg = Array.isArray(regRows) && regRows.length > 0 ? regRows[0] : null;
+      const regExpired = !!(reg?.expires_at && new Date(reg.expires_at).getTime() < Date.now());
+      if (!reg || regExpired) {
+        console.log('[wakeIOS] No live mobile registration for user, skipping push:', userId);
+        return false;
+      }
+    }
+
+    const tokenUrl = `${supabaseUrl}/rest/v1/device_tokens?user_id=eq.${encodeURIComponent(userId)}&platform=eq.ios&order=updated_at.desc&limit=1`;
+    const tokenRes = await fetch(tokenUrl, {
+      headers: { 'apikey': supabaseKey, 'Authorization': `Bearer ${supabaseKey}` },
+    });
+
+    if (!tokenRes.ok) {
+      console.log('[wakeIOS] device_tokens query failed:', await tokenRes.text());
+      return false;
+    }
+
+    const tokens = await tokenRes.json();
+    if (!tokens || tokens.length === 0) {
+      console.log('[wakeIOS] No iOS device token registered for user:', userId);
+      return false;
+    }
+
+    const { token, environment } = tokens[0];
+    console.log('[wakeIOS] Sending VoIP push, env:', environment, 'token:', token.substring(0, 16) + '...');
+
+    const payload = {
+      uuid: callContext.callSid,
+      handle: callContext.fromNumber,
+      caller_name: callContext.callerName || callContext.fromNumber,
+      from: callContext.fromNumber,
+      to: callContext.toNumber,
+      call_sid: callContext.callSid,
+      // Telnyx SDK looks at metadata.voice_sdk_id when processing the push payload
+      metadata: {
+        voice_sdk_id: callContext.callSid,
+        caller_id_number: callContext.fromNumber,
+        caller_id_name: callContext.callerName || callContext.fromNumber,
+      },
+    };
+
+    const result = await sendVoIPPush({
+      deviceToken: token,
+      environment: (environment === 'sandbox' ? 'sandbox' : 'production'),
+      payload,
+    });
+
+    console.log('[wakeIOS] APNs response:', {
+      ok: result.ok,
+      status: result.status,
+      body: result.body || '(empty)',
+      apnsId: result.apnsId,
+    });
+
+    // TEMP DEBUG (remove after background-push diagnosis): edge console logs
+    // aren't queryable via tooling, so persist the APNs result to app_logs.
+    try {
+      await fetch(`${supabaseUrl}/rest/v1/app_logs`, {
+        method: 'POST',
+        headers: {
+          'apikey': supabaseKey,
+          'Authorization': `Bearer ${supabaseKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          session_id: 'edge-wakeIOS',
+          level: result.ok ? 'log' : 'error',
+          message: `[wakeIOS-DEBUG] APNs status=${result.status} ok=${result.ok} env=${environment} tokenPrefix=${token.substring(0, 12)} apnsId=${result.apnsId || ''} body=${(result.body || '(empty)').substring(0, 200)}`,
+        }),
+      });
+    } catch (e) {
+      console.log('[wakeIOS] debug app_logs insert failed:', e);
+    }
+
+    if (!result.ok && result.status === 410) {
+      // 410 Gone = token is no longer valid; remove it so we don't retry
+      console.log('[wakeIOS] Token invalidated by APNs, deleting');
+      await fetch(
+        `${supabaseUrl}/rest/v1/device_tokens?user_id=eq.${encodeURIComponent(userId)}&token=eq.${encodeURIComponent(token)}`,
+        {
+          method: 'DELETE',
+          headers: { 'apikey': supabaseKey, 'Authorization': `Bearer ${supabaseKey}` },
+        }
+      );
+    }
+
+    return result.ok;
+  } catch (e) {
+    console.log('[wakeIOS] error:', e instanceof Error ? e.message : String(e));
+    return false;
+  }
+}
+
+// Send a STANDARD APNs alert push (not VoIP) to a specific device. Used for
+// queue alerts so the user sees a lockscreen banner when someone is waiting,
+// even when the app is backgrounded or terminated.
+async function sendAlertPush(opts: {
+  deviceToken: string;
+  environment: 'sandbox' | 'production';
+  payload: Record<string, unknown>;
+}): Promise<{ ok: boolean; status: number; body: string }> {
+  const bundleId = Deno.env.get('APNS_BUNDLE_ID') || 'com.greencaller.app';
+  const jwt = await getApnsJwt();
+  const host = opts.environment === 'sandbox'
+    ? 'https://api.sandbox.push.apple.com'
+    : 'https://api.push.apple.com';
+
+  const res = await fetch(`${host}/3/device/${opts.deviceToken}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `bearer ${jwt}`,
+      // No .voip suffix — alert pushes use the bundle ID as the topic
+      'apns-topic': bundleId,
+      'apns-push-type': 'alert',
+      'apns-priority': '10',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(opts.payload),
+  });
+
+  return { ok: res.ok, status: res.status, body: await res.text() };
+}
+
+// Send a queue-waiting alert push to every iOS member of a department whose
+// device has registered an alert token. Best-effort: errors per-device are
+// logged but don't fail the call. Returns the number of pushes attempted.
+async function sendQueueAlertToDept(deptId: string, callerNumber: string): Promise<number> {
+  try {
+    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+    const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+
+    // 1. Department members
+    const membersRes = await fetch(
+      `${supabaseUrl}/rest/v1/department_members?department_id=eq.${encodeURIComponent(deptId)}&select=user_id`,
+      { headers: { 'apikey': supabaseKey, 'Authorization': `Bearer ${supabaseKey}` } }
+    );
+    if (!membersRes.ok) {
+      console.log('[queueAlert] department_members query failed:', await membersRes.text());
+      return 0;
+    }
+    const members: Array<{ user_id: string }> = await membersRes.json();
+    console.log('[queueAlert] dept members found:', members.length, 'for deptId:', deptId);
+    if (!members.length) {
+      console.log('[queueAlert] No department members for deptId:', deptId);
+      return 0;
+    }
+
+    // 2. For each member, find their alert token and push
+    let attempted = 0;
+    let tokensFound = 0;
+    for (const m of members) {
+      try {
+        const tokenRes = await fetch(
+          `${supabaseUrl}/rest/v1/device_tokens?user_id=eq.${encodeURIComponent(m.user_id)}&platform=eq.ios_alert&order=updated_at.desc&limit=1`,
+          { headers: { 'apikey': supabaseKey, 'Authorization': `Bearer ${supabaseKey}` } }
+        );
+        if (!tokenRes.ok) {
+          console.log('[queueAlert] token query failed for user', m.user_id, ':', await tokenRes.text());
+          continue;
+        }
+        const tokens: Array<{ token: string; environment: string }> = await tokenRes.json();
+        if (!tokens.length) {
+          console.log('[queueAlert] No ios_alert token saved for user', m.user_id, '— rebuild + open app needed');
+          continue;
+        }
+        tokensFound++;
+
+        const { token, environment } = tokens[0];
+        const env: 'sandbox' | 'production' = environment === 'sandbox' ? 'sandbox' : 'production';
+
+        const result = await sendAlertPush({
+          deviceToken: token,
+          environment: env,
+          payload: {
+            aps: {
+              alert: {
+                title: 'Greencaller',
+                body: `${callerNumber} is waiting in the queue`,
+              },
+              sound: 'default',
+              'thread-id': `queue-${deptId}`,
+              // time-sensitive bypasses iOS Focus modes and forces immediate
+              // delivery rather than batched/throttled delivery — needed when
+              // the app has been backgrounded for a while and iOS would
+              // otherwise consider it "low value".
+              'interruption-level': 'time-sensitive',
+              'relevance-score': 1.0,
+            },
+            // Custom data so the app can route to the queue tab if user taps the banner
+            queueDeptId: deptId,
+            from: callerNumber,
+          },
+        });
+        attempted++;
+        console.log('[queueAlert] APNs response for user', m.user_id, ':', {
+          ok: result.ok, status: result.status, body: result.body || '(empty)',
+        });
+      } catch (e) {
+        console.log('[queueAlert] per-member error:', e instanceof Error ? e.message : String(e));
+      }
+    }
+    return attempted;
+  } catch (e) {
+    console.log('[queueAlert] outer error:', e instanceof Error ? e.message : String(e));
+    return 0;
+  }
+}
+
 // Helper to make Supabase REST API calls without the client library
 async function supabaseQuery(table: string, params: {
   select?: string;
@@ -134,17 +453,13 @@ serve(async (req) => {
         return await handleTeXMLRecording(formObj);
       }
 
-      // Status-callback branch must be gated on a TERMINAL CallStatus value.
-      // Telnyx sends CallStatus="ringing" on the INITIAL inbound TeXML webhook
-      // for outbound-routed-internally calls (web user → another internal
-      // user's number). If we route that initial ringing webhook to
-      // handleTeXMLStatusCallback we return empty TeXML and Telnyx terminates
-      // the call in ~50 ms — visible to the caller as "call screen opens and
-      // closes immediately" with sipCode 200 + NORMAL_CLEARING + duration 0,
-      // and no inbound call_history row ever gets inserted. See
-      // .claude/INTERNAL_CALL_ROUTING_FIXES_2026_05_24.md §2.1 for the full
-      // history. Gate ONLY on terminal CallStatus values; ringing /
-      // in-progress fall through to handleTeXMLIncoming.
+      // Check for call status callback (TeXML format).
+      // Telnyx sends CallStatus on BOTH the initial inbound ringing webhook
+      // AND post-call progress events — we MUST gate this branch on a
+      // TERMINAL CallStatus value, otherwise the initial "ringing" webhook
+      // gets routed here, returns empty TeXML, and Telnyx hangs up the
+      // caller after a brief auto-answer (the "internal call closes
+      // immediately" bug).
       const terminalCallStatuses = new Set([
         'completed', 'busy', 'no-answer', 'noanswer', 'failed', 'canceled',
       ]);
@@ -160,6 +475,14 @@ serve(async (req) => {
       // Telnyx TeXML webhooks don't always include CallStatus/Direction.
       // If we have the basic call fields, treat it as an inbound call and return TeXML to route it.
       if (formObj.From && formObj.To && formObj.CallSid) {
+        // IVR hand-off: telnyx-ivr-gather <Redirect>s here with ?ivrTo=<user's
+        // number> after the caller picks a person. Route exactly as if the
+        // caller had dialled that user's number directly (all endpoints ring).
+        const ivrTo = new URL(req.url).searchParams.get('ivrTo');
+        if (ivrTo) {
+          console.log('IVR hand-off: overriding To', formObj.To, '->', ivrTo);
+          formObj.To = ivrTo;
+        }
         return await handleTeXMLIncoming(formObj);
       }
 
@@ -200,12 +523,11 @@ serve(async (req) => {
 
   } catch (error) {
     console.error('Error handling Telnyx incoming call:', error);
-    // Return valid XML so Telnyx doesn't play "application error" message
     return new Response(
-      '<?xml version="1.0" encoding="UTF-8"?><Response><Say>We are experiencing technical difficulties. Please try again later.</Say><Hangup/></Response>',
+      JSON.stringify({ error: error instanceof Error ? error.message : 'Unknown error' }),
       {
-        status: 200,
-        headers: { ...corsHeaders, 'Content-Type': 'application/xml' },
+        status: 500,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       }
     );
   }
@@ -240,130 +562,410 @@ async function handleTeXMLIncoming(formData: Record<string, string>) {
     const userId = phoneData.assigned_to;
     console.log('Routing TeXML call to user:', userId);
 
-    // Check subscription status for inbound call gating
-    const { data: profileRows } = await supabaseQuery('profiles', {
-      select: 'can_make_calls',
-      filters: { id: userId },
-    });
-    const userProfile = Array.isArray(profileRows) && profileRows.length > 0 ? profileRows[0] : null;
-    if (userProfile && userProfile.can_make_calls === false) {
-      console.log('User subscription inactive, rejecting inbound call');
-      return new Response(
-        `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Say voice="Polly.Amy-Neural">We're sorry, this number is not currently available. Please try again later.</Say>
-  <Hangup/>
-</Response>`,
-        { headers: { 'Content-Type': 'application/xml' } }
-      );
+    // Fire the iOS VoIP push as EARLY as possible — its delivery typically
+    // takes 1-3s and we don't need it to complete before doing the DB work
+    // below (callback-leg check, call_history insert, desktop SIP lookup).
+    // We await this promise later, just before deciding whether to wait
+    // for SIP registration. Wrapped in an IIFE with try/catch so it can't
+    // throw an unhandled rejection.
+    // DISABLED 2026-09-09 — superseded by the fire-and-forget telnyx-wake-ios
+    // dispatch further down. `wakeIOSDevice` is left defined but unused so this is
+    // a one-line revert if needed.
+    //
+    // WHY: iOS must report a CallKit call for EVERY VoIP push it receives, and
+    // plugins/withVoIP.js calls reportNewIncomingCall() unconditionally with a
+    // freshly generated NSUUID (our payload's `uuid` is a "v3:…" CallSid, never a
+    // valid NSUUID, so it is always substituted). There is no dedup guard — so N
+    // pushes for one phone call produce N separate CallKit calls. Observed live
+    // 2026-09-09 20:07: our inline push, our telnyx-wake-ios push and Telnyx's own
+    // push all landed; the call rang, but answering one CallKit call left another
+    // that iOS then ended — logs show "CallKit end pressed" with no
+    // "answer pressed" at all, and the caller was dropped to voicemail.
+    //
+    // Exactly ONE wake source must fire per call until withVoIP.js derives a stable
+    // UUID from the PSTN CallSid and skips duplicate reports (then redundant wake
+    // sources become safe again).
+    //
+    // Returning false here also skips the registration poll below, which is gated on
+    // `pushFired`. That poll has never once succeeded in the logs (always
+    // "registered=false waitedMs≈1420 maxWait=1200") while calls connected anyway,
+    // so it was ~1.4s of pure latency on a webhook that must return fast
+    // (.claude/BACKGROUND_ANSWER_CONNECT.md §2).
+    // RE-ENABLED 2026-09-09 after empirical testing contradicted the plan to run a
+    // single wake source:
+    //   all three sources (20:07)  -> app woke
+    //   Telnyx push only  (20:41)  -> app did NOT wake
+    //   our wake push only (21:02, 21:08, incl. a fresh install) -> app did NOT wake
+    // Both single-source configs had APNs return 200 with an apns-id, and app_logs
+    // show nothing at all at those timestamps. No mechanism is known for why one
+    // push alone fails to wake while several succeed — but the measurements are
+    // unambiguous and the working configuration is restored until it is understood.
+    //
+    // COST: multiple pushes mean multiple CallKit reports for one call (withVoIP.js
+    // reports unconditionally with a generated NSUUID and has no dedup). Observed
+    // 2026-09-09 20:07 — END on uuid ca7fb1f1 and ANSWER on uuid a2a77257 eleven ms
+    // apart; the END handler tore the call down first and the caller went to
+    // voicemail. That is a real bug, but it cost one call in five, whereas a single
+    // wake source costs every call.
+    //
+    // PROPER FIX (needs a native build): derive the CallKit UUID from the PSTN
+    // CallSid in plugins/withVoIP.js and skip reportNewIncomingCall when that UUID is
+    // already active. Redundant wake sources then become harmless and this whole
+    // trade-off disappears.
+    const earlyMobileSipUsername = Deno.env.get('TELNYX_SIP_USERNAME');
+    const pushPromise: Promise<boolean> = (async () => {
+      if (!earlyMobileSipUsername) return false;
+      try {
+        return await wakeIOSDevice(userId, {
+          callSid,
+          fromNumber: from,
+          toNumber: to,
+          callerName: from,
+        });
+      } catch (e) {
+        console.log('[wakeIOS] error in early push:', e);
+        return false;
+      }
+    })();
+
+    // Check if this is a callback leg of an outbound SDK call
+    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+    let skipTeXMLInsert = false;
+    try {
+      const thirtySecondsAgo = new Date(Date.now() - 30 * 1000).toISOString();
+      const checkUrl = `${supabaseUrl}/rest/v1/call_history?select=id&user_id=eq.${encodeURIComponent(userId)}&direction=eq.outbound&status=eq.connecting&created_at=gte.${encodeURIComponent(thirtySecondsAgo)}&limit=1`;
+      const recentOutboundRes = await fetch(checkUrl, {
+        headers: {
+          'apikey': Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
+          'Authorization': `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')}`,
+        },
+      });
+      if (recentOutboundRes.ok) {
+        const recentOutbound = await recentOutboundRes.json();
+        if (recentOutbound && recentOutbound.length > 0) {
+          console.log('Skipping TeXML call_history insert — callback leg of active outbound call');
+          skipTeXMLInsert = true;
+        }
+      }
+    } catch (e) {
+      console.log('Outbound check failed (non-fatal), proceeding with insert:', e);
     }
 
-    // Record the inbound call
-    await supabaseInsert('call_history', {
-      user_id: userId,
-      from_number: from,
-      to_number: to,
-      direction: 'inbound',
-      status: 'ringing',
-      duration: 0,
-      call_sid: callSid,
+    if (!skipTeXMLInsert) {
+      // Record the inbound call
+      await supabaseInsert('call_history', {
+        user_id: userId,
+        from_number: from,
+        to_number: to,
+        direction: 'inbound',
+        status: 'ringing',
+        duration: 0,
+        call_sid: callSid,
+      });
+    }
+
+    // Get the desktop's per-session SIP credentials with freshness check.
+    // Now filtered by device_type='web' since the table holds one row per
+    // (user_id, device_type) — we don't want this to accidentally pick up
+    // the mobile row.
+    const { data: regData } = await supabaseQuery('telnyx_webrtc_registrations', {
+      select: 'sip_username,updated_at,expires_at',
+      filters: { user_id: userId, device_type: 'web' },
+      single: true,
     });
 
-    // Get the user's freshest SIP credential. NEVER use single: true here —
-    // telnyx_webrtc_registrations is keyed by (user_id, device_type), so a
-    // user logged in on both mobile and web has 2 rows and PostgREST's
-    // single-object accept header returns 406 Not Acceptable. We pick the
-    // row with the most recent updated_at — that's whichever device most
-    // recently re-registered, i.e. the one most likely to actually receive
-    // the SIP INVITE.
-    // See .claude/INTERNAL_CALL_ROUTING_FIXES_2026_05_24.md §2.2.
-    const supabaseUrlForReg = Deno.env.get('SUPABASE_URL')!;
-    const supabaseKeyForReg = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-    const regsUrl = `${supabaseUrlForReg}/rest/v1/telnyx_webrtc_registrations?user_id=eq.${encodeURIComponent(userId)}&select=sip_username,updated_at,expires_at,device_type&order=updated_at.desc&limit=1`;
-    const regsRes = await fetch(regsUrl, {
-      headers: { apikey: supabaseKeyForReg, Authorization: `Bearer ${supabaseKeyForReg}` },
+    // Mobile SIP: prefer the per-user credential from telnyx_webrtc_registrations
+    // (device_type='mobile'). Falls back to the legacy shared TELNYX_SIP_USERNAME
+    // env var only if the user hasn't yet been provisioned with a per-user
+    // mobile credential — necessary so existing installs keep working until
+    // they next launch the updated app and call telnyx-generate-token.
+    const { data: mobileRegData } = await supabaseQuery('telnyx_webrtc_registrations', {
+      select: 'sip_username,updated_at,expires_at',
+      filters: { user_id: userId, device_type: 'mobile' },
+      single: true,
     });
-    let regData: any = null;
-    if (regsRes.ok) {
-      const regsRows = await regsRes.json();
-      if (Array.isArray(regsRows) && regsRows.length > 0) regData = regsRows[0];
+
+    let mobileSipUsername: string | undefined;
+    if (mobileRegData?.sip_username) {
+      const mExpiresAt = mobileRegData.expires_at ? new Date(mobileRegData.expires_at).getTime() : 0;
+      const now = Date.now();
+      const mIsExpired = mExpiresAt && mExpiresAt < now;
+      // Be lenient with mobile: VoIP push wakes the device on demand,
+      // so we don't need a recent SIP REGISTER like desktop does.
+      // Only reject if the credential is hard-expired.
+      if (!mIsExpired) {
+        mobileSipUsername = mobileRegData.sip_username;
+        console.log('Using per-user mobile SIP credential for user:', userId, 'username:', mobileSipUsername.substring(0, 12) + '...');
+      } else {
+        console.log('Per-user mobile SIP credential is expired for user:', userId, '- skipping mobile endpoint');
+      }
+    } else {
+      console.log('No per-user mobile SIP credential for user:', userId, '- skipping mobile endpoint');
     }
+    // DELIBERATELY no fallback to TELNYX_SIP_USERNAME env var. That shared
+    // credential causes cross-user routing: when an app briefly registers
+    // with the shared credential (e.g. during the "No userId" race in
+    // CallContext, or a fresh install before per-user provisioning), an
+    // INVITE for ANY user routed to that shared credential lands on
+    // whoever was last registered. Skip the mobile endpoint entirely if
+    // the called user has no valid per-user mobile credential — the call
+    // falls through to their web endpoint (if registered) or voicemail.
+
+    // Wake the iOS device via our own APNs VoIP push (telnyx-wake-ios).
+    //
+    // Telnyx stopped sending its own VoIP push around 2026-07-02 — verified in app_logs:
+    // the last payload carrying Telnyx's real `metadata.rtc_ip` is 2026-07-02, and after
+    // that background calls only worked while our wake push existed. Without a push, iOS
+    // never wakes the app, the <Sip> INVITE below hits a suspended socket, and the caller
+    // rings out to voicemail.
+    //
+    // FIRE AND FORGET — DO NOT `await` THIS.
+    // See .claude/BACKGROUND_ANSWER_CONNECT.md §2: this webhook must return its TeXML
+    // fast. If it is slow (~8-10s) Telnyx times the webhook out, never dials, and there
+    // is no call at all. The push is dispatched here and the response ignored; the wake
+    // function logs its own APNs status under [wakeIOS]. A failure there can never
+    // delay or break this webhook.
+    //
+    // Fired as early as possible so the device has the longest possible head start
+    // within the TeXML <Dial timeout="60"> window.
+    // DISABLED 2026-09-09 — see the CallKit-duplication note above. Exactly ONE wake
+    // source may fire per call, and Telnyx's own push was chosen as that source: it
+    // recovered on 2026-09-07 (real `VSDK1…` payloads observed again after
+    // TELNYX_CONNECTION_ID was pinned to Default Credential Connection 2) and it
+    // carries the genuine voice_sdk_id, so the SDK can drive a proper attach_call
+    // reconnect — which our push cannot, having no real voice_sdk_id.
+    //
+    // RE-ENABLED 2026-09-09. Ours is the wake source we want to depend on: Telnyx's
+    // own push died silently on 2026-07-02 and stayed dead until 2026-09-07 with no
+    // error anywhere — two months of inbound calls going to voicemail. Ours logs an
+    // APNs status code on every call, so the same failure would be visible within
+    // one call instead of two months.
+    //
+    // REQUIRES the iOS push credential to be CLEARED from the Telnyx credential
+    // connection (3041757718164539203), otherwise Telnyx pushes too, two CallKit
+    // calls are reported for one phone call, and answering one leaves another that
+    // iOS ends — the answer-then-voicemail bug.
+    //   PATCH https://api.telnyx.com/v2/credential_connections/3041757718164539203
+    //   {"ios_push_credential_id": null}
+    // Leave android_push_credential_id alone.
+    //
+    // Set WAKE_IOS_ENABLED=false to disable ours again (e.g. to hand the job back to
+    // Telnyx's push after re-attaching its credential).
+    const WAKE_IOS_ENABLED = Deno.env.get('WAKE_IOS_ENABLED') !== 'false';
+    if (WAKE_IOS_ENABLED) {
+      try {
+        const wakeUrl = `${Deno.env.get('SUPABASE_URL')}/functions/v1/telnyx-wake-ios`;
+        void fetch(wakeUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')}`,
+          },
+          body: JSON.stringify({ userId, callSid, fromNumber: from, toNumber: to, callerName: from }),
+        }).catch((e) => console.log('[wake] dispatch error (non-fatal):', e?.message || String(e)));
+        console.log('[wake] iOS wake push dispatched (not awaited) for user:', userId);
+      } catch (e) {
+        console.log('[wake] dispatch threw (non-fatal):', e instanceof Error ? e.message : String(e));
+      }
+    } else {
+      console.log('[wake] iOS wake push disabled (WAKE_IOS_ENABLED not set) — relying on Telnyx push');
+    }
+
+    // Android mirror of the above (2026-09-23). telnyx-wake-android sends a
+    // high-priority FCM data message to the user's platform='android' token;
+    // the app's background task posts the full-screen incoming-call notification
+    // and the app logs in with attach_call to collect the parked INVITE. Same
+    // fire-and-forget contract: nothing here waits on it or can slow the TeXML
+    // response. 404 (no Android token) is the normal outcome for iOS-only users.
+    // Set WAKE_ANDROID_ENABLED=false to rely on Telnyx's own FCM push alone.
+    const WAKE_ANDROID_ENABLED = Deno.env.get('WAKE_ANDROID_ENABLED') !== 'false';
+    if (WAKE_ANDROID_ENABLED) {
+      try {
+        const wakeUrl = `${Deno.env.get('SUPABASE_URL')}/functions/v1/telnyx-wake-android`;
+        void fetch(wakeUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')}`,
+          },
+          body: JSON.stringify({ userId, callSid, fromNumber: from, toNumber: to, callerName: from }),
+        }).catch((e) => console.log('[wake] android dispatch error (non-fatal):', e?.message || String(e)));
+        console.log('[wake] Android wake push dispatched (not awaited) for user:', userId);
+      } catch (e) {
+        console.log('[wake] android dispatch threw (non-fatal):', e instanceof Error ? e.message : String(e));
+      }
+    }
+
+    // Build list of SIP endpoints to dial simultaneously
+    const sipEndpoints: string[] = [];
 
     if (regData?.sip_username) {
-      // Staleness is determined ONLY by expires_at, NOT by an updated_at
-      // cutoff. The previous 3-minute updated_at check sent active
-      // registrations to voicemail whenever the WebRTC SDK didn't ping its
-      // row recently (it doesn't have to — the SIP layer keeps the SIP
-      // Contact alive independently of our DB row). Per
-      // .claude/INTERNAL_CALL_ROUTING_FIXES_2026_05_24.md §1, the only
-      // reliable signal is the credential's expires_at.
+      // Check if desktop registration is fresh (updated within last 3 minutes)
+      const updatedAt = regData.updated_at ? new Date(regData.updated_at).getTime() : 0;
       const now = Date.now();
+      const secondsSinceUpdate = (now - updatedAt) / 1000;
       const expiresAt = regData.expires_at ? new Date(regData.expires_at).getTime() : 0;
-      const isExpired = !!(expiresAt && expiresAt < now);
-      const isStale = isExpired;
+      const isExpired = expiresAt && expiresAt < now;
+      const isStale = secondsSinceUpdate > 180 || isExpired;
 
-      console.log('Registration check:', {
+      console.log('Desktop registration check:', {
         userId,
         sipUsername: regData.sip_username,
-        deviceType: regData.device_type,
-        expiresAt: regData.expires_at,
+        secondsSinceUpdate: Math.round(secondsSinceUpdate),
         isExpired,
         isStale,
       });
 
-      if (isStale) {
-        console.log('SIP registration is stale, routing to voicemail');
+      if (!isStale) {
+        // Desktop registration is fresh — add it as an endpoint
+        const desktopSipUri = `sip:${regData.sip_username}@sip.telnyx.com`;
+        const desktopSipUriWithHeaders = `${desktopSipUri}?X-PSTN-Call-Sid=${encodeURIComponent(callSid)}&amp;X-To-Number=${encodeURIComponent(to)}`;
+        sipEndpoints.push(desktopSipUriWithHeaders);
+        console.log('Added desktop SIP endpoint:', regData.sip_username);
+      } else {
+        console.log('Desktop SIP registration is stale, skipping desktop endpoint');
+      }
+    } else {
+      console.log('No desktop SIP registration found for user');
+    }
 
-        // Update call to missed status
-        await supabaseUpdate('call_history', { status: 'missed' }, { call_sid: callSid });
+    // Desk phones (Yealink etc.) live on their OWN Telnyx credential connection
+    // per phone — see desk_phones. They are deliberately NOT in
+    // telnyx_webrtc_registrations, so nothing above can pick them up. A physical
+    // phone keeps its own SIP registration alive, so no freshness check: if the
+    // row is active we ring it alongside the apps and the first to answer wins.
+    // Fully guarded — a user with no desk phone is unaffected.
+    try {
+      const { data: deskRows } = await supabaseQuery('desk_phones', {
+        select: 'sip_username',
+        filters: { user_id: userId, is_active: 'true' },
+      });
+      for (const desk of (Array.isArray(deskRows) ? deskRows : [])) {
+        if (!desk?.sip_username) continue;
+        if (sipEndpoints.some(uri => uri.includes(desk.sip_username))) continue;
+        const deskSipUri = `sip:${desk.sip_username}@sip.telnyx.com?X-PSTN-Call-Sid=${encodeURIComponent(callSid)}&amp;X-To-Number=${encodeURIComponent(to)}`;
+        sipEndpoints.push(deskSipUri);
+        console.log('Added desk phone SIP endpoint:', desk.sip_username);
+      }
+    } catch (e) {
+      console.log('desk_phones lookup failed (non-fatal):', e instanceof Error ? e.message : String(e));
+    }
 
-        const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
-        const voicemailUrl = `${supabaseUrl}/functions/v1/telnyx-voicemail-twiml?to=${encodeURIComponent(to)}&amp;from=${encodeURIComponent(from)}&amp;callSid=${encodeURIComponent(callSid)}`;
-
-        return new Response(
-          `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Redirect>${voicemailUrl}</Redirect>
-</Response>`,
-          { headers: { 'Content-Type': 'application/xml' } }
-        );
+    // Always add mobile SIP if configured (mobile foreground service keeps WebSocket alive)
+    if (mobileSipUsername) {
+      const mobileSipUri = `sip:${mobileSipUsername}@sip.telnyx.com`;
+      const mobileSipUriWithHeaders = `${mobileSipUri}?X-PSTN-Call-Sid=${encodeURIComponent(callSid)}&amp;X-To-Number=${encodeURIComponent(to)}`;
+      // Only add if different from desktop endpoint (avoid duplicate ringing)
+      if (!sipEndpoints.some(uri => uri.includes(mobileSipUsername))) {
+        sipEndpoints.push(mobileSipUriWithHeaders);
+        console.log('Added mobile SIP endpoint:', mobileSipUsername);
       }
 
-      console.log('Found user SIP registration:', regData.sip_username);
-      const sipUri = `sip:${regData.sip_username}@sip.telnyx.com`;
-      console.log('Dialing SIP URI via TeXML:', sipUri);
+      // Await the push that we kicked off earlier (in parallel with DB work).
+      // By the time we reach this point, the push has typically been propagating
+      // for 1-2s already, so the device is partway-to-fully woken up.
+      const pushFired = await pushPromise;
+      console.log('[telnyx-incoming-call] iOS push fired:', pushFired);
 
+      // Wait for THIS user's mobile device to wake from the push and re-register
+      // before Telnyx dials, so the TeXML <Sip> INVITE doesn't race the reconnect
+      // (a dead socket → dial fails → notification shows but never reaches the
+      // call screen). We watch the user's OWN mobile row in
+      // telnyx_webrtc_registrations: the app upserts it with a fresh updated_at the
+      // moment it wakes and fetches its per-user credential (immediately before it
+      // SIP-REGISTERs). Exit as soon as updated_at is newer than the baseline read
+      // above — a warm/fast wake proceeds in ~1-2s; a cold launch gets the ~5-6s it
+      // needs. (The previous poll hit a hardcoded credential-connection id that
+      // never reflected per-user gencred… credentials, so it always timed out.)
+      if (pushFired) {
+        const baselineUpdatedAt = mobileRegData?.updated_at
+          ? new Date(mobileRegData.updated_at).getTime()
+          : 0;
+        const startTime = Date.now();
+        // CRITICAL: this whole block must finish FAST. telnyx-incoming-call is a
+        // TeXML webhook — Telnyx waits for the <Dial> response, and only AFTER it
+        // dials the SIP credential does Telnyx send ITS OWN VoIP push (the one that
+        // actually shows the CallKit notification and carries the real
+        // voice_sdk_id). If we stall here, Telnyx times the webhook out, never
+        // dials, never pushes → NO incoming-call notification at all. A long
+        // registration wait (6-8s) broke exactly this. Keep the ceiling small; the
+        // device is woken by Telnyx's push regardless of registration state, and
+        // the 1s <Pause> in the TeXML covers the reconnect gap.
+        const maxWait = 1200;
+        let registered = false;
+
+        while (Date.now() - startTime < maxWait) {
+          try {
+            const { data: freshReg } = await supabaseQuery('telnyx_webrtc_registrations', {
+              select: 'updated_at',
+              filters: { user_id: userId, device_type: 'mobile' },
+              single: true,
+            });
+            const freshUpdatedAt = freshReg?.updated_at
+              ? new Date(freshReg.updated_at).getTime()
+              : 0;
+            if (freshUpdatedAt > baselineUpdatedAt) {
+              registered = true;
+              console.log('[telnyx-incoming-call] mobile re-registered after',
+                Date.now() - startTime, 'ms');
+              break;
+            }
+          } catch (e) {
+            console.log('[telnyx-incoming-call] registration probe error:', e);
+          }
+          await new Promise((r) => setTimeout(r, 250));
+        }
+
+        if (!registered) {
+          console.log('[telnyx-incoming-call] proceeding without fresh registration after',
+            Date.now() - startTime, 'ms');
+        }
+
+        // TEMP DEBUG (remove after diagnosis): did the per-user mobile registration
+        // refresh (early-exit) or did we hit the ceiling? Edge console logs aren't
+        // queryable, so mirror it to app_logs.
+        try {
+          const dbgUrl = Deno.env.get('SUPABASE_URL');
+          const dbgKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+          if (dbgUrl && dbgKey) {
+            await fetch(`${dbgUrl}/rest/v1/app_logs`, {
+              method: 'POST',
+              headers: { apikey: dbgKey, Authorization: `Bearer ${dbgKey}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                session_id: 'edge-incoming-call',
+                level: registered ? 'log' : 'error',
+                message: `[reg-poll-DEBUG] registered=${registered} waitedMs=${Date.now() - startTime} maxWait=${maxWait} mobileSip=${mobileSipUsername}`,
+              }),
+            });
+          }
+        } catch (_e) { /* best-effort */ }
+      }
+    }
+
+    console.log('Total SIP endpoints to dial simultaneously:', sipEndpoints.length);
+
+    if (sipEndpoints.length > 0) {
       const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
-
-      // Build the voicemail action URL for when dial fails/times out
-      // Include callSid so the voicemail handler can update call status to 'missed'
       const voicemailActionUrl = `${supabaseUrl}/functions/v1/telnyx-voicemail-twiml?to=${encodeURIComponent(to)}&amp;from=${encodeURIComponent(from)}&amp;callSid=${encodeURIComponent(callSid)}`;
-
-      // Use answerOnBridge="false" so Telnyx answers immediately and plays ringback to caller
-      // while the SIP endpoint rings. The WebRTC client has time to accept.
-      // Also increase timeout to 60 seconds.
-      // The action URL routes to voicemail on no-answer, busy, or failed.
-      // The statusCallback URL receives status updates (answered, completed) to update call_history
-      // NOTE: Use the original caller's number (from) as callerId so the WebRTC client
-      // displays who is actually calling, not the business number.
-      // Pass the original PSTN CallSid via custom SIP header so WebRTC client can use it for recording
-      const sipUriWithHeaders = `${sipUri}?X-PSTN-Call-Sid=${encodeURIComponent(callSid)}&amp;X-To-Number=${encodeURIComponent(to)}`;
       const statusCallbackUrl = `${supabaseUrl}/functions/v1/telnyx-incoming-call`;
-      console.log('SIP URI with headers:', sipUriWithHeaders);
+
+      // Build <Sip> elements for all endpoints — they ring simultaneously
+      // First to answer wins, the rest are cancelled
+      const sipElements = sipEndpoints.map(uri => `    <Sip>${uri}</Sip>`).join('\n');
+
+      console.log('Dialing', sipEndpoints.length, 'endpoints simultaneously');
 
       return new Response(
         `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Dial callerId="${from}" timeout="60" answerOnBridge="false" action="${voicemailActionUrl}" statusCallback="${statusCallbackUrl}" statusCallbackEvent="initiated answered completed">
-    <Sip>${sipUriWithHeaders}</Sip>
+${sipElements}
   </Dial>
 </Response>`,
         { headers: { 'Content-Type': 'application/xml' } }
       );
     } else {
-      console.log('No SIP registration found for user');
-
-      // Mark as missed and go to voicemail
+      console.log('No SIP endpoints available, routing to voicemail');
       await supabaseUpdate('call_history', { status: 'missed' }, { call_sid: callSid });
 
       const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
@@ -415,7 +1017,27 @@ async function handleTeXMLIncoming(formData: Record<string, string>) {
       status: 'waiting',
     });
 
-    // Hold music URL with Redirect loop — checks for agent pickup every ~3 seconds
+    // Send a lockscreen-capable alert push to every iOS department member.
+    // The in-app QUEUE MONITOR handles foreground via notifee; this push
+    // handles backgrounded/locked/terminated devices where JS isn't running.
+    //
+    // Wrapped in EdgeRuntime.waitUntil so Supabase keeps the function alive
+    // until APNs has accepted the push — without this, the runtime can
+    // tear down as soon as we return the TeXML response below, killing
+    // the in-flight fetch to api.push.apple.com and the user never sees
+    // the notification when the app was already in background at queue time.
+    const queuePushTask = sendQueueAlertToDept(deptData.id, from)
+      .then((n) => console.log('[queueAlert] pushes attempted:', n))
+      .catch((e) => console.log('[queueAlert] dispatch error:', e instanceof Error ? e.message : String(e)));
+    try {
+      // @ts-ignore — EdgeRuntime is provided by the Supabase Deno runtime
+      if (typeof EdgeRuntime !== 'undefined' && typeof EdgeRuntime.waitUntil === 'function') {
+        // @ts-ignore
+        EdgeRuntime.waitUntil(queuePushTask);
+      }
+    } catch {}
+
+    // Hold music URL that passes callSid for pickup detection
     const holdMusicUrl = `${supabaseUrl}/functions/v1/telnyx-hold-music?callSid=${encodeURIComponent(callSid)}`;
 
     console.log('Playing hold music for caller, call_sid:', callSid);
@@ -610,15 +1232,41 @@ async function handleIncomingCall(payload: any) {
     const userId = phoneData.assigned_to;
     console.log('Routing Telnyx call to user:', userId);
 
-    await supabaseInsert('call_history', {
-      user_id: userId,
-      from_number: fromNumber,
-      to_number: toNumber,
-      direction: 'inbound',
-      status: 'ringing',
-      duration: 0,
-      call_sid: callControlId,
-    });
+    // Check if this is a callback leg of an outbound SDK call.
+    // If user has a recent outbound call with status 'connecting' (preliminary record),
+    // this incoming event is the callback leg — skip creating a duplicate inbound record.
+    let skipInsert = false;
+    try {
+      const thirtySecondsAgo = new Date(Date.now() - 30 * 1000).toISOString();
+      const checkUrl = `${supabaseUrl}/rest/v1/call_history?select=id&user_id=eq.${encodeURIComponent(userId)}&direction=eq.outbound&status=eq.connecting&created_at=gte.${encodeURIComponent(thirtySecondsAgo)}&limit=1`;
+      const recentOutboundRes = await fetch(checkUrl, {
+        headers: {
+          'apikey': Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
+          'Authorization': `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')}`,
+        },
+      });
+      if (recentOutboundRes.ok) {
+        const recentOutbound = await recentOutboundRes.json();
+        if (recentOutbound && recentOutbound.length > 0) {
+          console.log('Skipping call_history insert — callback leg of active outbound call');
+          skipInsert = true;
+        }
+      }
+    } catch (e) {
+      console.log('Outbound check failed (non-fatal), proceeding with insert:', e);
+    }
+
+    if (!skipInsert) {
+      await supabaseInsert('call_history', {
+        user_id: userId,
+        from_number: fromNumber,
+        to_number: toNumber,
+        direction: 'inbound',
+        status: 'ringing',
+        duration: 0,
+        call_sid: callControlId,
+      });
+    }
 
     const { data: regData } = await supabaseQuery('telnyx_webrtc_registrations', {
       select: 'sip_username',
@@ -671,12 +1319,14 @@ async function handleIncomingCall(payload: any) {
 
         if (userCred?.sip_username) {
           console.log('Found user creds in Telnyx:', userCred.sip_username);
-          await supabaseUpsert('telnyx_webrtc_registrations', {
-            user_id: userId,
-            sip_username: userCred.sip_username,
-            updated_at: new Date().toISOString(),
-          });
-
+          // NOTE: do NOT upsert the registrations row here. This fallback
+          // path only knows the sip_username, not the telnyx_credential_id
+          // or device_type. Writing a partial row corrupts the data state
+          // (sip_username drifts away from telnyx_credential_id, so the
+          // generate-token "delete previous credential" logic later targets
+          // the wrong credential and leaks orphans). The app's own
+          // `telnyx-generate-token` call will refresh the row with a
+          // consistent set of fields the next time the client launches.
           const sipUri = `sip:${userCred.sip_username}@sip.telnyx.com`;
           await fetch(`https://api.telnyx.com/v2/calls/${callControlId}/actions/transfer`, {
             method: 'POST',
@@ -781,15 +1431,17 @@ async function handleRecordingSaved(payload: any) {
   });
   console.log('Primary lookup:', callData ? 'found' : 'not found');
 
-  // Fallback: find most recent inbound call
+  // Fallback: find the most recent call (any direction) within 5 minutes.
+  // The recording.saved event fires when the call ends, so the latest call
+  // in call_history is almost certainly the one that was being recorded.
   if (!callData) {
-    console.log('Trying fallback lookup...');
+    console.log('Trying fallback lookup (any direction)...');
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
 
     const fallbackRes = await fetch(
-      `${supabaseUrl}/rest/v1/call_history?select=*&direction=eq.inbound&created_at=gte.${encodeURIComponent(fiveMinutesAgo)}&order=created_at.desc&limit=1`,
+      `${supabaseUrl}/rest/v1/call_history?select=*&created_at=gte.${encodeURIComponent(fiveMinutesAgo)}&order=created_at.desc&limit=1`,
       { headers: { 'apikey': supabaseKey, 'Authorization': `Bearer ${supabaseKey}` } }
     );
 
@@ -806,52 +1458,7 @@ async function handleRecordingSaved(payload: any) {
   const fromNumber = callData?.from_number || payloadFrom || 'unknown';
   const toNumber = callData?.to_number || payloadTo || 'unknown';
   const direction = callData?.direction || 'inbound';
-  let userId = callData?.user_id || null;
-
-  // Attribute the recording to the user who PLACED the call, not the
-  // inbound (receiver) leg. callData on internal account-to-account calls
-  // matches the inbound row (handleTeXMLIncoming inserts it with the v3:
-  // call_sid that Telnyx then echoes back here). Without this override,
-  // Mike's recording ends up under Zaid's user_id and never appears in
-  // Mike's Activity tab. Match outbound call_history rows by trailing 9
-  // digits of from/to within the last 10 minutes.
-  // SAFE: this only runs inside handleRecordingSaved which is gated by
-  // eventType === 'call.recording.saved'. It cannot affect call setup.
-  // IMPORTANT: Telnyx's call.recording.saved payload does NOT include
-  // from/to — only payload.call_control_id, recording_id, recording_urls
-  // etc. So we use callData (the inbound row) for the phone numbers,
-  // falling back to payload values if for some reason callData is missing.
-  const matchFrom = callData?.from_number || payloadFrom;
-  const matchTo = callData?.to_number || payloadTo;
-  if (matchFrom || matchTo) {
-    try {
-      const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
-      const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-      const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
-      const normalize = (n: string | undefined) => (n || '').replace(/\D/g, '').slice(-9);
-      const fromDigits = normalize(matchFrom);
-      const toDigits = normalize(matchTo);
-      console.log('Recording attribution lookup digits:', { fromDigits, toDigits });
-      if (fromDigits && toDigits) {
-        const outUrl = `${supabaseUrl}/rest/v1/call_history?direction=eq.outbound&created_at=gte.${encodeURIComponent(tenMinAgo)}&order=created_at.desc&limit=20&select=user_id,from_number,to_number`;
-        const outRes = await fetch(outUrl, {
-          headers: { 'apikey': supabaseKey, 'Authorization': `Bearer ${supabaseKey}` },
-        });
-        if (outRes.ok) {
-          const outRows = await outRes.json();
-          for (const row of outRows || []) {
-            if (normalize(row.from_number) === fromDigits && normalize(row.to_number) === toDigits && row.user_id) {
-              userId = row.user_id;
-              console.log('Attributed recording to outbound row user_id:', userId);
-              break;
-            }
-          }
-        }
-      }
-    } catch (e) {
-      console.log('Outbound-row attribution lookup failed:', e);
-    }
-  }
+  const userId = callData?.user_id || null;
 
   console.log('Inserting recording with:', { callControlId, fromNumber, toNumber, direction, userId });
   const insertResult = await supabaseInsert('call_recordings', {
@@ -1007,6 +1614,25 @@ async function handleTeXMLStatusCallback(formObj: Record<string, string>) {
       break;
     default:
       status = statusToCheck || 'completed';
+  }
+
+  // Clean up call_queue when the caller hangs up or the call ends
+  if (callSid && (status === 'completed' || status === 'failed' || status === 'busy' || status === 'no-answer')) {
+    console.log('Cleaning up call_queue for ended call:', callSid);
+    const cleanupResult = await supabaseUpdate('call_queue',
+      { status: 'abandoned', abandoned_at: new Date().toISOString() },
+      { call_sid: callSid, status: 'waiting' }
+    );
+    // Also clean up 'ringing' status entries
+    await supabaseUpdate('call_queue',
+      { status: 'abandoned', abandoned_at: new Date().toISOString() },
+      { call_sid: callSid, status: 'ringing' }
+    );
+    if (cleanupResult.error) {
+      console.log('Queue cleanup note:', cleanupResult.error.message);
+    } else {
+      console.log('Queue entry cleaned up successfully');
+    }
   }
 
   console.log('Updating call_history:', { callSid, status, duration: callDuration });

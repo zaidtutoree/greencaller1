@@ -33,6 +33,31 @@ async function supabaseUpdate(table: string, patch: any, filters: Record<string,
   return { errorText: null as string | null };
 }
 
+function xmlEscape(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+}
+
+// Look up the user's out-of-hours voicemail message by the dialed number.
+async function getOutOfHoursMessage(toNumber: string | null): Promise<string | null> {
+  if (!toNumber) return null;
+  try {
+    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+    const pnUrl = `${supabaseUrl}/rest/v1/phone_numbers?phone_number=eq.${encodeURIComponent(toNumber)}&select=assigned_to`;
+    const pnRes = await fetch(pnUrl, { headers: { ...supabaseHeaders(), Accept: 'application/json' } });
+    if (!pnRes.ok) return null;
+    const pn = await pnRes.json();
+    const userId = Array.isArray(pn) && pn[0]?.assigned_to;
+    if (!userId) return null;
+    const ohUrl = `${supabaseUrl}/rest/v1/opening_hours?user_id=eq.${encodeURIComponent(userId)}&select=voicemail_message`;
+    const ohRes = await fetch(ohUrl, { headers: { ...supabaseHeaders(), Accept: 'application/json' } });
+    if (!ohRes.ok) return null;
+    const oh = await ohRes.json();
+    return (Array.isArray(oh) && oh[0]?.voicemail_message) || null;
+  } catch {
+    return null;
+  }
+}
+
 async function safeUpdateCallQueue(callSid: string | null, status: string) {
   if (!callSid) return;
   // call_sid is stored in call_queue for department routing; if no row exists this will no-op
@@ -81,6 +106,7 @@ serve(async (req) => {
     const originalFrom = url.searchParams.get('from');
     const callSid = url.searchParams.get('callSid');
     const deptId = url.searchParams.get('deptId');
+    const closed = url.searchParams.get('closed') === '1';
     
     // Parse form data if POST (Telnyx dial action callback)
     let dialCallStatus = '';
@@ -175,12 +201,19 @@ serve(async (req) => {
     const actionUrl = `${supabaseUrl}/functions/v1/telnyx-voicemail-callback?${callbackParams.toString()}`.replace(/&/g, '&amp;');
     
     console.log('Generating voicemail TwiML with action URL:', actionUrl);
-    
+
+    // Out-of-hours: play the user's custom message (if set) as the greeting.
+    let greeting = 'Please leave a message after the beep. Press hash when finished.';
+    if (closed) {
+      const custom = await getOutOfHoursMessage(toNumber);
+      greeting = xmlEscape(custom || "We're currently closed. Please leave a message after the beep and we'll get back to you during our opening hours.");
+    }
+
     // Generate TwiML for voicemail recording using Polly.Amy-Neural voice
     const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say voice="Polly.Amy-Neural">Please leave a message after the beep. Press hash when finished.</Say>
-  <Record 
+  <Say voice="Polly.Amy-Neural">${greeting}</Say>
+  <Record
     action="${actionUrl}"
     method="POST"
     maxLength="120"

@@ -120,6 +120,11 @@ verify_jwt = false
 [functions.admin-assign-phone]
 verify_jwt = false
 
+# Admin dashboard calls with the publishable key (not a JWT) and authenticates
+# itself with the x-admin-token header, like every other admin-* function.
+[functions.admin-deskphone]
+verify_jwt = false
+
 [functions.admin-department]
 verify_jwt = false
 

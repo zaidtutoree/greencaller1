@@ -1,3 +1,12 @@
+# Dependencies / builds (both apps)
+node_modules/
+dist/
+dist-ssr/
+dist-electron/
+electron-dist/
+*.local
+*.timestamp-*.mjs
+
 # Logs
 logs
 *.log
@@ -5,14 +14,17 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
-lerna-debug.log*
 
-node_modules
-dist
-dist-ssr
-*.local
+# Installers (too large for GitHub) - keep publish.sh
+release/*.exe
+release/*.blockmap
+release/*.yml
 
-# Editor directories and files
+# Supabase CLI scratch
+supabase/.temp/
+greencallerapp1/supabase/.temp/
+
+# Editor / OS
 .vscode/*
 !.vscode/extensions.json
 .idea
@@ -22,10 +34,4 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
-
-# Environment variables
-.env
-.env.*
-
-# Windows artifacts
 nul

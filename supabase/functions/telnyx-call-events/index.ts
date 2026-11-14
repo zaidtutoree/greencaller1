@@ -68,6 +68,25 @@ async function supabaseInsert(table: string, row: any) {
   return { errorText: null as string | null };
 }
 
+// Desk phones (Yealink etc.) each have their OWN Telnyx credential connection
+// whose webhook points here. A call on one of those connections has no app to
+// write call_history, so this webhook does it. Returns null for every other
+// connection so the existing flows are untouched.
+async function lookupDeskPhone(connectionId: string | undefined | null) {
+  if (!connectionId) return null;
+  try {
+    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+    const url = `${supabaseUrl}/rest/v1/desk_phones?telnyx_connection_id=eq.${encodeURIComponent(String(connectionId))}&is_active=eq.true&select=id,user_id,sip_username,phone_number_id,auto_record&limit=1`;
+    const res = await fetch(url, { headers: supabaseHeaders() });
+    if (!res.ok) return null;
+    const rows = await res.json();
+    return Array.isArray(rows) && rows.length > 0 ? rows[0] : null;
+  } catch (e) {
+    console.log('desk_phones lookup failed (non-fatal):', e instanceof Error ? e.message : String(e));
+    return null;
+  }
+}
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
@@ -199,6 +218,32 @@ serve(async (req) => {
 
         console.log('Call initiated details:', { callControlId, callLegId, to: callTo, from: callFrom, direction: callDirection });
 
+        // Desk phone placed a call: Telnyx fires ONE `outgoing` PSTN leg on the
+        // phone's own connection (from = the ANI override, to = dialled number).
+        // No app exists to insert the call_history row, so insert it here and
+        // stop — the generic PSTN-leg branch below would otherwise grab some
+        // other user's recent outbound row to the same number.
+        const deskOut = callDirection === 'outgoing' && callTo && callTo.startsWith('+')
+          ? await lookupDeskPhone(payload?.connection_id)
+          : null;
+        if (deskOut) {
+          const { data: existing } = await supabaseSelectSingle('call_history', 'id', { call_sid: callControlId });
+          if (!existing?.id) {
+            const ins = await supabaseInsert('call_history', {
+              user_id: deskOut.user_id,
+              from_number: callFrom || '',
+              to_number: callTo,
+              direction: 'outbound',
+              status: 'ringing',
+              duration: 0,
+              call_sid: callControlId,
+              device: 'deskphone',
+            });
+            console.log('Desk phone outbound call_history inserted for user', deskOut.user_id, ins.errorText || 'ok');
+          }
+          break;
+        }
+
         // For WebRTC SDK outbound calls, Telnyx creates two legs:
         // 1. WebRTC→Telnyx leg (to = SIP URI, ends after setup)
         // 2. Telnyx→PSTN leg (to = phone number like +44..., stays active)
@@ -248,6 +293,53 @@ serve(async (req) => {
         const ansTo = payload?.to;
         const ansDirection = payload?.direction;
         const isPstnAnswered = ansTo && ansTo.startsWith('+');
+
+        // Desk phone auto-record: the handset has no Record button, so when the
+        // user has switched on "record all desk phone calls" we start a dual
+        // channel recording on the desk-connection leg the moment it is
+        // answered — both for calls the handset placed (to = +number) and for
+        // inbound calls answered on it (to = its SIP credential). The existing
+        // call.recording.saved handler files the result against the user.
+        const deskAns = await lookupDeskPhone(payload?.connection_id);
+        if (deskAns?.auto_record && telnyxApiKey) {
+          try {
+            const rec = await fetch(`https://api.telnyx.com/v2/calls/${encodeURIComponent(callControlId)}/actions/record_start`, {
+              method: 'POST',
+              headers: { Authorization: `Bearer ${telnyxApiKey}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                format: 'mp3',
+                channels: 'dual',
+                client_state: btoa(JSON.stringify({ recorderUserId: deskAns.user_id, source: 'deskphone-auto' })),
+              }),
+            });
+            console.log('Desk phone auto-record', rec.ok ? 'started' : `failed: ${await rec.text()}`, 'for', callControlId);
+          } catch (e) {
+            console.log('Desk phone auto-record error (non-fatal):', e instanceof Error ? e.message : String(e));
+          }
+        }
+
+        // Inbound call answered ON the desk phone: the leg TeXML dialled to the
+        // phone's SIP URI lives on the phone's own connection, so it reports
+        // here. Stamp device on the user's ringing inbound row so history shows
+        // where the call was taken. Guarded: only runs for desk connections.
+        if (ansTo && !ansTo.startsWith('+')) {
+          const deskIn = deskAns;
+          if (deskIn) {
+            try {
+              const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+              const threeMinAgo = new Date(Date.now() - 3 * 60 * 1000).toISOString();
+              const q = `${supabaseUrl}/rest/v1/call_history?user_id=eq.${encodeURIComponent(deskIn.user_id)}&direction=eq.inbound&created_at=gte.${encodeURIComponent(threeMinAgo)}&order=created_at.desc&limit=1&select=id`;
+              const r = await fetch(q, { headers: supabaseHeaders() });
+              const rows = r.ok ? await r.json() : [];
+              if (Array.isArray(rows) && rows[0]?.id) {
+                await supabaseUpdate('call_history', { device: 'deskphone' }, { id: rows[0].id });
+                console.log('Inbound call answered on desk phone; stamped call_history', rows[0].id);
+              }
+            } catch (e) {
+              console.log('desk phone inbound stamp failed (non-fatal):', e instanceof Error ? e.message : String(e));
+            }
+          }
+        }
 
         if (isPstnAnswered && !clientState?.action) {
           console.log('PSTN leg answered, updating call_history with active call_control_id:', callControlId);
@@ -471,6 +563,11 @@ serve(async (req) => {
           status = 'busy';
         } else if (hangupCause === 'no_answer' || hangupCause === 'timeout') {
           status = 'no-answer';
+        } else if (duration <= 1) {
+          // Any other cause with no talk time (e.g. "unspecified" after a SIP
+          // 488 media rejection) is a failed attempt, not a completed call.
+          const { data: cd } = await supabaseSelectSingle('call_history', 'status', { call_sid: callControlId });
+          if (cd?.status === 'ringing' || cd?.status === 'initiated') status = 'failed';
         }
 
         const updateData: Record<string, any> = { status };
@@ -480,6 +577,37 @@ serve(async (req) => {
         
         // Check if voicemail-requested — don't overwrite
         const { data: currentCallData } = await supabaseSelectSingle('call_history', 'status', { call_sid: callControlId });
+
+        // Desk phone leg that died before call.initiated was processed (seen
+        // 2026-10-04: a SIP 488 outbound from the Yealink hung up after ~1s and
+        // the hangup webhook beat the initiated one, so the row was inserted
+        // AFTER this update and sat at "ringing" forever). If there is no row
+        // yet for a desk connection leg, write the terminal row here; the
+        // later call.initiated skips its insert when the call_sid exists.
+        // Only for legs the HANDSET placed (to = a real number). The leg Telnyx
+        // dials TO the handset for an inbound call has `to` = the SIP credential
+        // and is already covered by the TeXML inbound row — recording it here
+        // produced a bogus "outbound to gencred…" entry (2026-10-04).
+        const hangupTo: string = payload?.to || '';
+        if (!currentCallData && hangupTo.startsWith('+')) {
+          const deskLeg = await lookupDeskPhone(payload?.connection_id);
+          if (deskLeg) {
+            const finalStatus = hangupCause === 'normal_clearing' && duration > 1 ? 'completed' : 'failed';
+            const ins = await supabaseInsert('call_history', {
+              user_id: deskLeg.user_id,
+              from_number: payload?.from || '',
+              to_number: payload?.to || '',
+              direction: payload?.direction === 'incoming' ? 'inbound' : 'outbound',
+              status: finalStatus,
+              duration: duration > 0 ? duration : 0,
+              call_sid: callControlId,
+              device: 'deskphone',
+            });
+            console.log('Desk phone leg ended before insert; wrote terminal row', finalStatus, ins.errorText || 'ok');
+            break;
+          }
+        }
+
         if (currentCallData?.status === 'voicemail-requested') {
           console.log('Call is voicemail-requested, skipping status update');
         } else {

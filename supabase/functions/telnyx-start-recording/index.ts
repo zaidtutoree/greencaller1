@@ -11,6 +11,40 @@ function isValidUUID(str: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str);
 }
 
+// Helper: is a v3:/v2: Call Control id still a LIVE call? Used to skip stale,
+// already-ended call_sids when resolving a recording target by phone-digit
+// match. Without this, when the same two numbers call repeatedly, the digit
+// match can grab an OLD ended call's call_control_id, and record_start then
+// fails the liveness gate with 409 "Call has already ended". Returns false on
+// any error so callers treat unknown as not-recordable.
+async function isCallAlive(ccId: string, telnyxApiKey: string): Promise<boolean> {
+  try {
+    const r = await fetch(`https://api.telnyx.com/v2/calls/${ccId}`, {
+      headers: { Authorization: `Bearer ${telnyxApiKey}` },
+    });
+    if (!r.ok) return false;
+    const d = await r.json();
+    return d?.data?.is_alive === true;
+  } catch {
+    return false;
+  }
+}
+
+// Best-effort debug line to app_logs (edge console logs aren't queryable via
+// tooling). TEMP — remove after recording diagnosis.
+async function recDebug(message: string) {
+  try {
+    const url = Deno.env.get('SUPABASE_URL');
+    const key = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+    if (!url || !key) return;
+    await fetch(`${url}/rest/v1/app_logs`, {
+      method: 'POST',
+      headers: { apikey: key, Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: 'edge-start-recording', level: 'log', message }),
+    });
+  } catch (_e) { /* ignore */ }
+}
+
 // Helper to update call_history call_sid to the call_control_id (so recording webhook lookup works)
 async function updateCallSidToControlId(originalCallSid: string, callControlId: string, fromNumber?: string, toNumber?: string) {
   const supabaseUrl = Deno.env.get('SUPABASE_URL');
@@ -142,12 +176,223 @@ serve(async (req) => {
     let callControlId = callId;
     let originalCallId = callId;
 
-    // If this is a UUID (WebRTC SDK call or TeXML CallSid), look up the Call Control ID
-    if (isTexmlCallSid && !isCallControlId) {
+    // A caller-supplied v2:/v3: id is NOT automatically trustworthy. The client
+    // resolves the PSTN leg by polling call_history for the most recent outbound
+    // `v3:` row, and a brand-new call's row still holds its WebRTC UUID until the
+    // `call.initiated` webhook rewrites it — so a call placed within the previous
+    // minute can hand us ITS (now dead) id. Sending that to Telnyx returns
+    // 90015 "Invalid Call Control ID". Verify liveness and, if it's dead, fall
+    // through to the same resolution passes a UUID would take.
+    let providedIdUsable = isCallControlId;
+    if (isCallControlId) {
+      providedIdUsable = await isCallAlive(callId, telnyxApiKey);
+      if (!providedIdUsable) {
+        console.log('Supplied Call Control ID is not a live call, re-resolving:', callId);
+        await recDebug(`Supplied ccId not alive, re-resolving: ${callId}`);
+      }
+    }
+
+    // Pass 0: the live leg parked by telnyx-incoming-call at setup time. This is
+    // the authoritative source — the TeXML webhook carries the real v3: CallSid
+    // for the leg that is actually up, which neither the WebRTC SDK nor
+    // call_history reliably has. Everything below stays as a fallback.
+    if (!providedIdUsable) {
+      try {
+        const url = Deno.env.get('SUPABASE_URL')!;
+        const key = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+        const digits = (n?: string) => (n || '').replace(/\D/g, '').slice(-9);
+        const toDigits = digits(toNumber);
+        const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+
+        // The recording target is the leg we dialled OUT to, so match on the
+        // called party's digits. Newest first — a live call is the most recent.
+        const legUrl =
+          `${url}/rest/v1/live_call_legs?select=call_sid,created_at` +
+          `&to_digits=eq.${encodeURIComponent(toDigits)}` +
+          `&created_at=gte.${encodeURIComponent(tenMinAgo)}` +
+          `&order=created_at.desc&limit=5`;
+
+        const legRes = await fetch(legUrl, {
+          headers: { apikey: key, Authorization: `Bearer ${key}`, Accept: 'application/json' },
+        });
+        if (legRes.ok) {
+          const legs = await legRes.json();
+          console.log('live_call_legs candidates:', legs);
+          for (const leg of legs || []) {
+            if (!leg?.call_sid) continue;
+            if (await isCallAlive(leg.call_sid, telnyxApiKey)) {
+              callControlId = leg.call_sid;
+              providedIdUsable = true;
+              console.log('Resolved Call Control ID from live_call_legs:', callControlId);
+              await recDebug(`Resolved from live_call_legs: ${callControlId}`);
+              break;
+            }
+          }
+        } else {
+          console.log('live_call_legs lookup returned:', legRes.status, await legRes.text());
+        }
+      } catch (e) {
+        console.log('live_call_legs lookup failed (non-fatal):', e);
+      }
+    }
+
+    // Pass 0b: internal (on-net) calls. When one of our numbers dials another
+    // of our numbers, Telnyx never creates a PSTN leg: the call lands straight
+    // on the destination DID's TeXML app, so no call.initiated fires and the
+    // WebRTC SDK gets no telnyx_call_control_id. The only recordable leg is the
+    // inbound TeXML call, which the TeXML Calls API can find by from/to; we
+    // then verify it is still up before using it.
+    if (!providedIdUsable) {
+      try {
+        const toE164 = (n?: string): string | null => {
+          const d = (n || '').replace(/\D/g, '');
+          if (!d) return null;
+          if ((n || '').trim().startsWith('+') || d.startsWith('44')) return '+' + d;
+          if (d.startsWith('0')) return '+44' + d.slice(1);
+          return '+' + d;
+        };
+        // TeXML AccountSid is the Telnyx account id that arrives on every
+        // TeXML webhook (AccountSid); override via secret if it ever changes.
+        const accountSid = Deno.env.get('TELNYX_TEXML_ACCOUNT_SID') || '6f45c7f5-8eca-4da0-9d15-0cbd979f3c7f';
+        const to = toE164(toNumber);
+        const from = toE164(fromNumber);
+        if (to) {
+          const qs = new URLSearchParams({ To: to, PageSize: '10' });
+          if (from) qs.set('From', from);
+          const res = await fetch(`https://api.telnyx.com/v2/texml/Accounts/${accountSid}/Calls?${qs.toString()}`, {
+            headers: { Authorization: `Bearer ${telnyxApiKey}`, Accept: 'application/json' },
+          });
+          if (res.ok) {
+            const data = await res.json();
+            const calls: any[] = Array.isArray(data?.calls) ? data.calls : Array.isArray(data?.data) ? data.data : [];
+            calls.sort((a, b) => Date.parse(b?.start_time || b?.date_created || 0) - Date.parse(a?.start_time || a?.date_created || 0));
+            console.log('TeXML calls candidates:', calls.map((c) => ({ sid: c?.sid || c?.call_sid, status: c?.status, from: c?.from, to: c?.to, start: c?.start_time })));
+            for (const c of calls) {
+              const sid: string | undefined = c?.sid || c?.call_sid;
+              if (!sid || !(sid.startsWith('v3:') || sid.startsWith('v2:'))) continue;
+              if (c?.status && ['completed', 'canceled', 'failed', 'busy', 'no-answer'].includes(c.status)) continue;
+              if (await isCallAlive(sid, telnyxApiKey)) {
+                callControlId = sid;
+                providedIdUsable = true;
+                console.log('Resolved Call Control ID from TeXML Calls API (on-net call):', callControlId);
+                await recDebug(`Resolved from TeXML Calls API: ${callControlId}`);
+                break;
+              }
+            }
+          } else {
+            console.log('TeXML Calls API lookup returned:', res.status, (await res.text()).substring(0, 300));
+          }
+        }
+      } catch (e) {
+        console.log('TeXML Calls API lookup failed (non-fatal):', e);
+      }
+    }
+
+    // Pass 0c: on-net calls, real-time. The TeXML Calls list above is CDR-like
+    // (it only shows ended calls), so for a call that is up right now ask the
+    // destination number's connection for its ACTIVE calls, then confirm each
+    // candidate's from/to via its leg's call events before using it.
+    if (!providedIdUsable) {
+      try {
+        const last9 = (n?: string) => (n || '').replace(/[^0-9]/g, '').slice(-9);
+        const toL9 = last9(toNumber);
+        const fromL9 = last9(fromNumber);
+        const tx = { Authorization: `Bearer ${telnyxApiKey}`, Accept: 'application/json' };
+        const toE164 = (() => {
+          const d = (toNumber || '').replace(/[^0-9]/g, '');
+          if (!d) return null;
+          if ((toNumber || '').trim().startsWith('+') || d.startsWith('44')) return '+' + d;
+          if (d.startsWith('0')) return '+44' + d.slice(1);
+          return '+' + d;
+        })();
+
+        // Which connection answers the dialled number? (its TeXML app)
+        let connectionId: string | null = Deno.env.get('TELNYX_TEXML_CONNECTION_ID') || null;
+        if (!connectionId && toE164) {
+          const pn = await fetch(`https://api.telnyx.com/v2/phone_numbers?filter[phone_number]=${encodeURIComponent(toE164)}`, { headers: tx });
+          if (pn.ok) {
+            const pj = await pn.json();
+            connectionId = pj?.data?.[0]?.connection_id || null;
+            console.log('Destination number connection lookup:', { toE164, connectionId });
+          } else {
+            console.log('phone_numbers lookup returned:', pn.status, (await pn.text()).substring(0, 200));
+          }
+        }
+
+        if (connectionId) {
+          const ac = await fetch(`https://api.telnyx.com/v2/connections/${connectionId}/active_calls?page[size]=20`, { headers: tx });
+          if (ac.ok) {
+            const aj = await ac.json();
+            const active: any[] = Array.isArray(aj?.data) ? aj.data : [];
+            active.sort((a, b) => (a?.call_duration ?? 0) - (b?.call_duration ?? 0)); // newest first
+            console.log('Active calls on destination connection:', active.map((c) => ({ ccid: c?.call_control_id, leg: c?.call_leg_id, dur: c?.call_duration })));
+
+            let fallback: string | null = null;
+            for (const c of active) {
+              const ccid: string | undefined = c?.call_control_id;
+              const leg: string | undefined = c?.call_leg_id;
+              if (!ccid) continue;
+
+              // Confirm from/to via the leg's events (call.initiated carries them).
+              let matched = false;
+              let sawNumbers = false;
+              if (leg) {
+                const ev = await fetch(`https://api.telnyx.com/v2/call_events?filter[leg_id]=${encodeURIComponent(leg)}&page[size]=10`, { headers: tx });
+                if (ev.ok) {
+                  const ej = await ev.json();
+                  const events: any[] = Array.isArray(ej?.data) ? ej.data : [];
+                  for (const e of events) {
+                    const m = e?.metadata || e?.payload || {};
+                    const evFrom = m?.from ?? m?.From;
+                    const evTo = m?.to ?? m?.To;
+                    if (evFrom || evTo) {
+                      sawNumbers = true;
+                      if (last9(evTo) === toL9 && (!fromL9 || last9(evFrom) === fromL9)) { matched = true; break; }
+                    }
+                  }
+                  console.log('Leg events check:', { leg, events: events.length, sawNumbers, matched, sample: events[0] ? { name: events[0]?.name, keys: Object.keys(events[0]?.metadata || {}) } : null });
+                } else {
+                  console.log('call_events lookup returned:', ev.status, (await ev.text()).substring(0, 200));
+                }
+              }
+
+              if (matched && await isCallAlive(ccid, telnyxApiKey)) {
+                callControlId = ccid;
+                providedIdUsable = true;
+                console.log('Resolved Call Control ID from active_calls (from/to confirmed):', callControlId);
+                await recDebug(`Resolved from active_calls (confirmed): ${callControlId}`);
+                break;
+              }
+              // No numbers available to confirm: remember the newest live call as a last resort.
+              if (!sawNumbers && !fallback && (c?.call_duration ?? 999) <= 600) fallback = ccid;
+            }
+
+            if (!providedIdUsable && fallback && await isCallAlive(fallback, telnyxApiKey)) {
+              callControlId = fallback;
+              providedIdUsable = true;
+              console.log('Resolved Call Control ID from active_calls (newest, unconfirmed):', callControlId);
+              await recDebug(`Resolved from active_calls (unconfirmed newest): ${callControlId}`);
+            }
+          } else {
+            console.log('active_calls lookup returned:', ac.status, (await ac.text()).substring(0, 200));
+          }
+        }
+      } catch (e) {
+        console.log('active_calls lookup failed (non-fatal):', e);
+      }
+    }
+
+    // Resolve whenever we cannot trust what we were given: a UUID (WebRTC SDK
+    // call or TeXML CallSid), or a stale Call Control ID.
+    if (!providedIdUsable) {
       console.log('Looking up Call Control ID for UUID:', callId);
 
-      // Try 1: Call Control API - the UUID might be a call_leg_id
       let found = false;
+
+      // Tries 1 and 2 only make sense for a UUID. Re-querying a dead v2:/v3: id
+      // just hands back itself, which is precisely what we're recovering from.
+      if (isTexmlCallSid) {
+      // Try 1: Call Control API - the UUID might be a call_leg_id
       try {
         const resp = await fetch(`https://api.telnyx.com/v2/calls/${callId}`, {
           headers: { 'Authorization': `Bearer ${telnyxApiKey}` },
@@ -189,6 +434,8 @@ serve(async (req) => {
         }
       }
 
+      } // end UUID-only lookups
+
       // Try 3: Look up the PSTN leg's Call Control ID from call_history
       // The call.initiated webhook stores the v3: ID by mapping via to_number
       if (!found) {
@@ -229,9 +476,9 @@ serve(async (req) => {
                 const rowDigits = normalizeNum(row.to_number);
                 const rowLast9 = rowDigits.slice(-9);
                 const sidMatches = row.call_sid && (row.call_sid.startsWith('v2:') || row.call_sid.startsWith('v3:'));
-                if (sidMatches && rowLast9 === targetLast9) {
+                if (sidMatches && rowLast9 === targetLast9 && await isCallAlive(row.call_sid, telnyxApiKey)) {
                   callControlId = row.call_sid;
-                  console.log('Found PSTN Call Control ID (matched digits):', callControlId);
+                  console.log('Found PSTN Call Control ID (matched digits, live):', callControlId);
                   found = true;
                   break;
                 }
@@ -241,9 +488,10 @@ serve(async (req) => {
               if (!found) {
                 for (const row of rows) {
                   if (row.direction !== 'outbound') continue;
-                  if (row.call_sid && (row.call_sid.startsWith('v2:') || row.call_sid.startsWith('v3:'))) {
+                  if (row.call_sid && (row.call_sid.startsWith('v2:') || row.call_sid.startsWith('v3:'))
+                      && await isCallAlive(row.call_sid, telnyxApiKey)) {
                     callControlId = row.call_sid;
-                    console.log('Found PSTN Call Control ID (most recent v3):', callControlId);
+                    console.log('Found PSTN Call Control ID (most recent live v3):', callControlId);
                     found = true;
                     break;
                   }
@@ -267,9 +515,10 @@ serve(async (req) => {
                   if (!sidMatches) continue;
                   const rowToLast9 = normalizeNum(row.to_number).slice(-9);
                   const rowFromLast9 = normalizeNum(row.from_number).slice(-9);
-                  if (rowToLast9 === targetLast9 && rowFromLast9 === fromLast9) {
+                  if (rowToLast9 === targetLast9 && rowFromLast9 === fromLast9
+                      && await isCallAlive(row.call_sid, telnyxApiKey)) {
                     callControlId = row.call_sid;
-                    console.log('Found PSTN Call Control ID via inbound bridged-leg row:', callControlId);
+                    console.log('Found PSTN Call Control ID via inbound bridged-leg row (live):', callControlId);
                     found = true;
                     break;
                   }
@@ -336,6 +585,7 @@ serve(async (req) => {
     // Now use the Call Control API with the resolved call_control_id
     console.log('Using Call Control API for recording with ID:', callControlId);
     console.log('Original callId was TeXML:', isTexmlCallSid, 'Call Control:', isCallControlId);
+    await recDebug(`[rec-DEBUG] callId=${callId} isCCID=${isCallControlId} isUUID=${isTexmlCallSid} resolved=${callControlId} resolvedChanged=${callControlId !== originalCallId}`);
 
     // Verify the resolved Call Control ID is still active before trying to
     // record on it. Without this, when a stale v3: from an already-ended call
@@ -352,6 +602,7 @@ serve(async (req) => {
           const isAlive = aliveData?.data?.is_alive;
           console.log('Call liveness check:', { callControlId, isAlive });
           if (isAlive === false) {
+            await recDebug(`[rec-DEBUG] 409 resolved call not alive ccid=${callControlId} (original callId=${callId})`);
             return new Response(
               JSON.stringify({
                 success: false,
@@ -402,11 +653,13 @@ serve(async (req) => {
     if (!recordResponse.ok) {
       const errorText = await recordResponse.text();
       console.error('Telnyx recording API error:', errorText);
+      await recDebug(`[rec-DEBUG] record_start FAILED status=${recordResponse.status} ccid=${callControlId} body=${errorText.substring(0, 220)}`);
       throw new Error(`Failed to start recording: ${errorText}`);
     }
 
     const result = await recordResponse.json();
     console.log('Recording started successfully:', result);
+    await recDebug(`[rec-DEBUG] record_start OK ccid=${callControlId}`);
 
     return new Response(
       JSON.stringify({
