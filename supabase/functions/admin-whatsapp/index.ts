@@ -66,8 +66,12 @@ serve(async (req) => {
       const { data } = await admin.from("whatsapp_config").select("key, value");
       return Object.fromEntries((data || []).map((r: { key: string; value: string | null }) => [r.key, r.value || ""]));
     };
-    const setConfig = (key: string, value: string) =>
-      admin.from("whatsapp_config").upsert({ key, value, updated_at: new Date().toISOString() });
+    const setConfig = async (key: string, value: string) => {
+      const { error } = await admin.from("whatsapp_config").upsert({ key, value, updated_at: new Date().toISOString() });
+      if (error) console.error(`whatsapp_config upsert ${key} failed:`, error.message);
+      return !error;
+    };
+    const PROFILE_NAME = "Greencaller WhatsApp";
 
     // ── readiness ─────────────────────────────────────────────────────────
     if (action === "readiness" || action === "setup") {
@@ -85,8 +89,21 @@ serve(async (req) => {
       const errors = out.errors as string[];
       if (!TELNYX_KEY) errors.push("TELNYX_API_KEY secret is not set in Supabase.");
       if (!META_APP_ID) errors.push("TELNYX_WHATSAPP_APP_ID secret is not set (your Meta Tech Provider App ID).");
+      if (cfg.last_setup_error) errors.push(`Last setup attempt: ${cfg.last_setup_error}`);
 
       if (TELNYX_KEY) {
+        // Self-heal: if a profile with our name already exists at Telnyx (e.g. created before the
+        // config row was saved), adopt it instead of creating a duplicate.
+        if (!cfg.messaging_profile_id) {
+          const list = await telnyx("GET", "/messaging_profiles?page[size]=250");
+          const found = list.ok ? (list.data?.data || []).find((p: { name?: string }) => p.name === PROFILE_NAME) : null;
+          if (found?.id) {
+            cfg.messaging_profile_id = found.id;
+            await setConfig("messaging_profile_id", found.id);
+            out.messaging_profile_id = found.id;
+          }
+        }
+
         const apps = await telnyx("GET", "/whatsapp/foreign_apps");
         if (apps.ok) {
           const list: Array<{ app_id?: string; solution_id?: string; enabled?: boolean }> = Array.isArray(apps.data?.data)
@@ -112,7 +129,7 @@ serve(async (req) => {
           // 1. Shared messaging profile → inbound WhatsApp + OTP SMS land on our webhook.
           if (!cfg.messaging_profile_id) {
             const mp = await telnyx("POST", "/messaging_profiles", {
-              name: "Greencaller WhatsApp",
+              name: PROFILE_NAME,
               enabled: true,
               webhook_url: WEBHOOK_URL,
               webhook_api_version: "2",
@@ -121,9 +138,12 @@ serve(async (req) => {
             });
             if (mp.ok && mp.data?.data?.id) {
               await setConfig("messaging_profile_id", mp.data.data.id);
+              await setConfig("last_setup_error", "");
               out.messaging_profile_id = mp.data.data.id;
             } else {
-              errors.push(`Could not create messaging profile: ${telnyxError(mp)}`);
+              const msg = `Could not create messaging profile: ${telnyxError(mp)}`;
+              await setConfig("last_setup_error", msg);
+              errors.push(msg);
             }
           } else {
             // Keep the webhook pointed at us even if someone changed it in the portal.
@@ -131,6 +151,7 @@ serve(async (req) => {
               webhook_url: WEBHOOK_URL,
               webhook_api_version: "2",
             });
+            await setConfig("last_setup_error", "");
           }
           // 2. Signup completion webhook (account-wide).
           const ud = await telnyx("PATCH", "/whatsapp/user_data", { webhook_url: WEBHOOK_URL });
