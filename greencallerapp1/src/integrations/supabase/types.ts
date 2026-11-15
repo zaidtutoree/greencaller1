@@ -482,6 +482,7 @@ export type Database = {
       }
       crm_sheets: {
         Row: {
+          column_meta: Json
           columns: Json
           created_at: string
           id: string
@@ -491,6 +492,7 @@ export type Database = {
           user_id: string
         }
         Insert: {
+          column_meta?: Json
           columns?: Json
           created_at?: string
           id?: string
@@ -500,6 +502,7 @@ export type Database = {
           user_id: string
         }
         Update: {
+          column_meta?: Json
           columns?: Json
           created_at?: string
           id?: string

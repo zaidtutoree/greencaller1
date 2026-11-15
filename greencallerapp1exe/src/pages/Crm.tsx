@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import {
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Columns3,
@@ -14,6 +15,7 @@ import {
   Plus,
   Scissors,
   Search,
+  Settings2,
   Table2,
   Trash2,
   Upload,
@@ -46,6 +48,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import { parseCsv, toCsv } from "@/lib/csv";
+import { isExcelFile, parseExcelTables } from "@/lib/excel";
 import logo from "@/assets/greencaller-full-logo.png";
 
 /* ───────────────────────────── config ───────────────────────────── */
@@ -55,14 +58,30 @@ const ALLOWED_EMAIL = "zaid@greencaller.co.uk";
 const PAGE_SIZE = 50;
 const SAVE_DEBOUNCE_MS = 900;
 const DEFAULT_COLUMNS = ["Name", "Company", "Phone", "Email", "Status", "Notes"];
+const DEFAULT_COL_WIDTH = 180;
+const MIN_COL_WIDTH = 64;
+const MAX_COL_WIDTH = 1200;
 
 /* ───────────────────────────── types ───────────────────────────── */
+
+type ColumnType = "text" | "choice";
+
+/**
+ * Per-column settings, stored in `crm_sheets.column_meta` aligned by index to `columns`.
+ * A type alias (not an interface) so it is assignable to the generated Supabase `Json` type.
+ */
+type ColumnMeta = {
+  width?: number;
+  type?: ColumnType;
+  options?: string[];
+};
 
 interface Sheet {
   id: string;
   name: string;
   columns: string[];
   rows: string[][];
+  meta: ColumnMeta[];
   updated_at: string;
 }
 
@@ -71,15 +90,54 @@ type SaveState = "saved" | "dirty" | "saving" | "error";
 const isAllowed = (email?: string | null) => (email || "").trim().toLowerCase() === ALLOWED_EMAIL;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const normaliseSheet = (raw: any): Sheet => ({
-  id: raw.id,
-  name: raw.name ?? "Untitled list",
-  columns: Array.isArray(raw.columns) ? raw.columns.map((c: unknown) => String(c ?? "")) : [],
-  rows: Array.isArray(raw.rows)
-    ? raw.rows.map((r: unknown) => (Array.isArray(r) ? r.map((c) => String(c ?? "")) : []))
-    : [],
-  updated_at: raw.updated_at,
-});
+const normaliseMeta = (raw: any, count: number): ColumnMeta[] => {
+  const list: ColumnMeta[] = Array.isArray(raw)
+    ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      raw.map((m: any) => {
+        const out: ColumnMeta = {};
+        const width = Number(m?.width);
+        if (Number.isFinite(width) && width > 0) out.width = Math.round(width);
+        if (m?.type === "choice") {
+          out.type = "choice";
+          out.options = Array.isArray(m.options) ? m.options.map((o: unknown) => String(o ?? "")) : [];
+        }
+        return out;
+      })
+    : [];
+  // Always exactly one entry per column.
+  return Array.from({ length: count }, (_, i) => list[i] ?? {});
+};
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const normaliseSheet = (raw: any): Sheet => {
+  const columns: string[] = Array.isArray(raw.columns) ? raw.columns.map((c: unknown) => String(c ?? "")) : [];
+  return {
+    id: raw.id,
+    name: raw.name ?? "Untitled list",
+    columns,
+    rows: Array.isArray(raw.rows)
+      ? raw.rows.map((r: unknown) => (Array.isArray(r) ? r.map((c) => String(c ?? "")) : []))
+      : [],
+    meta: normaliseMeta(raw.column_meta, columns.length),
+    updated_at: raw.updated_at,
+  };
+};
+
+const SHEET_SELECT = "id, name, columns, rows, column_meta, updated_at";
+
+/** Parse a "one per line" options textarea into unique, trimmed choices. */
+const parseOptions = (text: string): string[] => {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    const v = line.trim();
+    if (v && !seen.has(v.toLowerCase())) {
+      seen.add(v.toLowerCase());
+      out.push(v);
+    }
+  }
+  return out;
+};
 
 /* ───────────────────────────── login ───────────────────────────── */
 
@@ -195,8 +253,18 @@ const Crm = () => {
   const [dragCol, setDragCol] = useState<number | null>(null);
   const [overCol, setOverCol] = useState<number | null>(null);
 
-  const [addColumnOpen, setAddColumnOpen] = useState(false);
-  const [newColumnName, setNewColumnName] = useState("");
+  /** Add / edit column dialog. `index` is null when adding a new column. */
+  const [columnDialog, setColumnDialog] = useState<{
+    index: number | null;
+    name: string;
+    type: ColumnType;
+    optionsText: string;
+  } | null>(null);
+
+  /** Live width while a column resize drag is in progress (committed on release). */
+  const [tempWidth, setTempWidth] = useState<{ col: number; width: number } | null>(null);
+  const resizeRef = useRef<{ col: number; startX: number; startWidth: number } | null>(null);
+
   const [split, setSplit] = useState<{ mode: "move" | "copy"; name: string } | null>(null);
   const [splitBusy, setSplitBusy] = useState(false);
   const [confirm, setConfirm] = useState<
@@ -236,7 +304,7 @@ const Crm = () => {
     setSheetsLoading(true);
     const { data, error } = await supabase
       .from("crm_sheets")
-      .select("id, name, columns, rows, updated_at")
+      .select(SHEET_SELECT)
       .order("updated_at", { ascending: false });
     setSheetsLoading(false);
     if (error) {
@@ -266,7 +334,7 @@ const Crm = () => {
     for (const sheet of batch) {
       const { error } = await supabase
         .from("crm_sheets")
-        .update({ name: sheet.name, columns: sheet.columns, rows: sheet.rows })
+        .update({ name: sheet.name, columns: sheet.columns, rows: sheet.rows, column_meta: sheet.meta })
         .eq("id", sheet.id);
       if (error) {
         failed = true;
@@ -326,35 +394,94 @@ const Crm = () => {
     setRangeTo("");
   };
 
-  const createSheet = async (name: string, columns: string[], rows: string[][]): Promise<Sheet | null> => {
-    if (!session?.user) return null;
-    const { data, error } = await supabase
-      .from("crm_sheets")
-      .insert({ user_id: session.user.id, name, columns, rows })
-      .select("id, name, columns, rows, updated_at")
-      .single();
+  interface NewSheet {
+    name: string;
+    columns: string[];
+    rows: string[][];
+    meta?: ColumnMeta[];
+  }
+
+  /** Insert one or more lists in a single request. The first one becomes active. */
+  const createSheets = async (list: NewSheet[]): Promise<Sheet[]> => {
+    if (!session?.user || list.length === 0) return [];
+    const payload = list.map((s) => ({
+      user_id: session.user.id,
+      name: s.name,
+      columns: s.columns,
+      rows: s.rows,
+      column_meta: normaliseMeta(s.meta ?? [], s.columns.length),
+    }));
+    const { data, error } = await supabase.from("crm_sheets").insert(payload).select(SHEET_SELECT);
     if (error || !data) {
       toast({ title: "Could not create list", description: error?.message, variant: "destructive" });
-      return null;
+      return [];
     }
-    const sheet = normaliseSheet(data);
-    setSheets((prev) => [sheet, ...prev]);
-    setActiveId(sheet.id);
+    // Postgres returns inserted rows in order; keep that order on screen.
+    const created = data.map(normaliseSheet);
+    setSheets((prev) => [...created, ...prev]);
+    setActiveId(created[0].id);
     resetView();
+    return created;
+  };
+
+  const createSheet = async (
+    name: string,
+    columns: string[],
+    rows: string[][],
+    meta?: ColumnMeta[],
+  ): Promise<Sheet | null> => {
+    const [sheet] = await createSheets([{ name, columns, rows, meta }]);
+    if (!sheet) return null;
     toast({ title: "List created", description: `${rows.length} rows, ${columns.length} columns.` });
     return sheet;
   };
 
   const handleUpload = async (file: File) => {
+    const baseName = file.name.replace(/\.[^.]+$/, "") || "Imported list";
     try {
-      const text = await file.text();
-      const parsed = parseCsv(text);
+      if (isExcelFile(file)) {
+        const tables = await parseExcelTables(await file.arrayBuffer());
+        if (tables.length === 0) {
+          toast({ title: "Empty workbook", description: "No tables were found in that file.", variant: "destructive" });
+          return;
+        }
+        // Name each table: its title cell if it had one, otherwise the sheet name
+        // (numbered when a sheet holds several tables). A lone table takes the file name.
+        const perSheet = new Map<string, number>();
+        tables.forEach((t) => perSheet.set(t.sheet, (perSheet.get(t.sheet) ?? 0) + 1));
+        const seen = new Map<string, number>();
+        const list: NewSheet[] = tables.map((t) => {
+          let name = baseName;
+          if (tables.length > 1) {
+            if (t.title) name = t.title;
+            else {
+              const n = (seen.get(t.sheet) ?? 0) + 1;
+              seen.set(t.sheet, n);
+              name = (perSheet.get(t.sheet) ?? 1) > 1 ? `${t.sheet} – table ${n}` : t.sheet;
+            }
+          }
+          return { name, columns: t.columns, rows: t.rows };
+        });
+        const created = await createSheets(list);
+        if (created.length > 0) {
+          const total = created.reduce((n, s) => n + s.rows.length, 0);
+          toast({
+            title: created.length === 1 ? "List created" : `${created.length} lists created`,
+            description:
+              created.length === 1
+                ? `${total} rows, ${created[0].columns.length} columns.`
+                : `Found ${created.length} separate tables (${total} rows) in ${file.name}.`,
+          });
+        }
+        return;
+      }
+
+      const parsed = parseCsv(await file.text());
       if (parsed.columns.length === 0) {
         toast({ title: "Empty file", description: "No columns were found in that CSV.", variant: "destructive" });
         return;
       }
-      const name = file.name.replace(/\.[^.]+$/, "") || "Imported list";
-      await createSheet(name, parsed.columns, parsed.rows);
+      await createSheet(baseName, parsed.columns, parsed.rows);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (err: any) {
       toast({ title: "Upload failed", description: err.message, variant: "destructive" });
@@ -453,6 +580,7 @@ const Crm = () => {
     updateSheet(active.id, (s) => ({
       ...s,
       columns: reorder(s.columns),
+      meta: reorder(normaliseMeta(s.meta, s.columns.length)),
       rows: s.rows.map((r) => reorder(r)),
     }));
     // Follow the column being searched so the filter keeps meaning the same thing.
@@ -528,7 +656,7 @@ const Crm = () => {
     const rows = picked.map((i) => source.rows[i].slice());
     const name = split.name.trim() || `${source.name} (part)`;
     setSplitBusy(true);
-    const created = await createSheet(name, source.columns.slice(), rows);
+    const created = await createSheet(name, source.columns.slice(), rows, source.meta.slice());
     setSplitBusy(false);
     if (!created) return;
     if (split.mode === "move") {
@@ -537,16 +665,47 @@ const Crm = () => {
     setSplit(null);
   };
 
-  const addColumn = () => {
+  const openAddColumn = () =>
+    setColumnDialog({ index: null, name: "", type: "text", optionsText: "" });
+
+  const openEditColumn = (colIndex: number) => {
     if (!active) return;
-    const name = newColumnName.trim() || `Column ${active.columns.length + 1}`;
-    updateSheet(active.id, (s) => ({
-      ...s,
-      columns: [...s.columns, name],
-      rows: s.rows.map((r) => [...r, ""]),
-    }));
-    setNewColumnName("");
-    setAddColumnOpen(false);
+    const m = active.meta[colIndex] ?? {};
+    setColumnDialog({
+      index: colIndex,
+      name: active.columns[colIndex] ?? "",
+      type: m.type === "choice" ? "choice" : "text",
+      optionsText: (m.options ?? []).join("\n"),
+    });
+  };
+
+  /** Create the column (index null) or apply the dialog's settings to an existing one. */
+  const saveColumnDialog = () => {
+    if (!active || !columnDialog) return;
+    const options = columnDialog.type === "choice" ? parseOptions(columnDialog.optionsText) : [];
+    const settings: ColumnMeta = columnDialog.type === "choice" ? { type: "choice", options } : {};
+
+    if (columnDialog.index === null) {
+      const name = columnDialog.name.trim() || `Column ${active.columns.length + 1}`;
+      updateSheet(active.id, (s) => ({
+        ...s,
+        columns: [...s.columns, name],
+        meta: [...normaliseMeta(s.meta, s.columns.length), settings],
+        rows: s.rows.map((r) => [...r, ""]),
+      }));
+    } else {
+      const idx = columnDialog.index;
+      const name = columnDialog.name.trim() || active.columns[idx] || `Column ${idx + 1}`;
+      updateSheet(active.id, (s) => {
+        const meta = normaliseMeta(s.meta, s.columns.length);
+        // Keep the width the user dragged; only type/options change here.
+        meta[idx] = { ...(meta[idx].width ? { width: meta[idx].width } : {}), ...settings };
+        const columns = s.columns.slice();
+        columns[idx] = name;
+        return { ...s, columns, meta };
+      });
+    }
+    setColumnDialog(null);
   };
 
   const deleteColumn = (colIndex: number) => {
@@ -554,9 +713,51 @@ const Crm = () => {
     updateSheet(active.id, (s) => ({
       ...s,
       columns: s.columns.filter((_, i) => i !== colIndex),
+      meta: normaliseMeta(s.meta, s.columns.length).filter((_, i) => i !== colIndex),
       rows: s.rows.map((r) => r.filter((_, i) => i !== colIndex)),
     }));
     setSearchCol((sc) => (sc === colIndex ? -1 : sc > colIndex ? sc - 1 : sc));
+  };
+
+  // ── Column widths ──────────────────────────────────────────────────────
+  const widthOf = (c: number) =>
+    tempWidth?.col === c ? tempWidth.width : active?.meta[c]?.width ?? DEFAULT_COL_WIDTH;
+
+  const setColumnWidth = (colIndex: number, width: number | null) => {
+    if (!active) return;
+    updateSheet(active.id, (s) => {
+      const meta = normaliseMeta(s.meta, s.columns.length);
+      const { width: _old, ...rest } = meta[colIndex];
+      meta[colIndex] = width ? { ...rest, width } : rest;
+      return { ...s, meta };
+    });
+  };
+
+  const startResize = (e: React.PointerEvent, colIndex: number) => {
+    e.preventDefault();
+    e.stopPropagation();
+    resizeRef.current = { col: colIndex, startX: e.clientX, startWidth: widthOf(colIndex) };
+    setTempWidth({ col: colIndex, width: widthOf(colIndex) });
+    const onMove = (ev: PointerEvent) => {
+      const r = resizeRef.current;
+      if (!r) return;
+      const width = Math.min(MAX_COL_WIDTH, Math.max(MIN_COL_WIDTH, r.startWidth + (ev.clientX - r.startX)));
+      setTempWidth({ col: r.col, width });
+    };
+    const onUp = (ev: PointerEvent) => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+      const r = resizeRef.current;
+      resizeRef.current = null;
+      setTempWidth(null);
+      if (!r) return;
+      const width = Math.min(MAX_COL_WIDTH, Math.max(MIN_COL_WIDTH, r.startWidth + (ev.clientX - r.startX)));
+      if (Math.abs(ev.clientX - r.startX) >= 2) setColumnWidth(r.col, Math.round(width));
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
   };
 
   // ── Derived view ───────────────────────────────────────────────────────
@@ -662,7 +863,7 @@ const Crm = () => {
             <input
               ref={fileInputRef}
               type="file"
-              accept=".csv,text/csv,.txt"
+              accept=".csv,text/csv,.txt,.xlsx,.xlsm,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
               className="hidden"
               onChange={(e) => {
                 const f = e.target.files?.[0];
@@ -672,7 +873,7 @@ const Crm = () => {
             />
             <div className="mb-3 grid grid-cols-2 gap-2">
               <Button size="sm" onClick={() => fileInputRef.current?.click()}>
-                <Upload className="mr-1.5 h-4 w-4" /> Upload CSV
+                <Upload className="mr-1.5 h-4 w-4" /> Upload
               </Button>
               <Button
                 size="sm"
@@ -688,7 +889,8 @@ const Crm = () => {
               </div>
             ) : sheets.length === 0 ? (
               <p className="px-1 py-4 text-xs text-muted-foreground">
-                No lists yet. Upload a CSV export of your spreadsheet to get started.
+                No lists yet. Upload an Excel file or CSV to get started. Each separate table in a sheet
+                becomes its own list.
               </p>
             ) : (
               <ul className="max-h-[60vh] space-y-1 overflow-y-auto">
@@ -720,11 +922,11 @@ const Crm = () => {
               <FileSpreadsheet className="mb-4 h-10 w-10 text-muted-foreground" />
               <h2 className="mb-1 text-lg font-semibold">Upload a client list</h2>
               <p className="mb-6 max-w-sm text-sm text-muted-foreground">
-                Export your spreadsheet as CSV and upload it here. You can then edit every cell, add rows and
-                columns, and everything saves automatically.
+                Upload an Excel workbook or CSV. If a sheet holds several separate tables, each one becomes its
+                own list. You can then edit every cell, add rows and columns, and everything saves automatically.
               </p>
               <Button onClick={() => fileInputRef.current?.click()}>
-                <Upload className="mr-2 h-4 w-4" /> Upload CSV
+                <Upload className="mr-2 h-4 w-4" /> Upload Excel / CSV
               </Button>
             </div>
           ) : (
@@ -778,7 +980,7 @@ const Crm = () => {
                   <Button size="sm" variant="outline" onClick={addRow}>
                     <Plus className="mr-1.5 h-4 w-4" /> Row
                   </Button>
-                  <Button size="sm" variant="outline" onClick={() => setAddColumnOpen(true)}>
+                  <Button size="sm" variant="outline" onClick={openAddColumn}>
                     <Columns3 className="mr-1.5 h-4 w-4" /> Column
                   </Button>
                   <Button size="sm" variant="outline" onClick={exportCsv}>
@@ -923,8 +1125,9 @@ const Crm = () => {
                             setDragCol(null);
                             setOverCol(null);
                           }}
+                          style={{ width: widthOf(c), minWidth: widthOf(c), maxWidth: widthOf(c) }}
                           className={cn(
-                            "group min-w-[180px] border-b border-r border-border/60 p-0 text-left transition-colors",
+                            "group relative border-b border-r border-border/60 p-0 text-left transition-colors",
                             dragCol === c && "opacity-50",
                             overCol === c && dragCol !== null && dragCol !== c && "bg-primary/10",
                             overCol === c && dragCol !== null && dragCol > c && "shadow-[inset_3px_0_0_0_hsl(var(--primary))]",
@@ -954,7 +1157,23 @@ const Crm = () => {
                               className="h-9 w-full min-w-0 bg-transparent px-1 text-xs font-semibold uppercase tracking-wide text-foreground outline-none focus:bg-white"
                               aria-label={`Column ${c + 1} name`}
                             />
+                            {active.meta[c]?.type === "choice" && (
+                              <span
+                                className="shrink-0 rounded bg-primary/10 px-1 py-0.5 text-[10px] font-medium text-primary"
+                                title={`Choice column: ${(active.meta[c]?.options ?? []).join(", ") || "no options yet"}`}
+                              >
+                                choice
+                              </span>
+                            )}
                             <div className="flex shrink-0 items-center opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+                              <button
+                                type="button"
+                                title="Column settings (type, choices)"
+                                onClick={() => openEditColumn(c)}
+                                className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                              >
+                                <Settings2 className="h-3.5 w-3.5" />
+                              </button>
                               <button
                                 type="button"
                                 title="Move column left"
@@ -983,6 +1202,22 @@ const Crm = () => {
                               </button>
                             </div>
                           </div>
+                          {/* Resize handle: drag to change width, double-click to reset. */}
+                          <div
+                            role="separator"
+                            aria-orientation="vertical"
+                            aria-label={`Resize column ${col || c + 1}`}
+                            title="Drag to resize · double-click to reset"
+                            onPointerDown={(e) => startResize(e, c)}
+                            onDoubleClick={() => setColumnWidth(c, null)}
+                            onClick={(e) => e.stopPropagation()}
+                            className={cn(
+                              "absolute -right-[3px] top-0 z-20 h-full w-[7px] cursor-col-resize select-none touch-none",
+                              "after:absolute after:left-[3px] after:top-0 after:h-full after:w-px after:bg-transparent after:transition-colors",
+                              "hover:after:bg-primary",
+                              tempWidth?.col === c && "after:bg-primary",
+                            )}
+                          />
                         </th>
                       ))}
                       <th className="w-10 border-b border-border/60" />
@@ -1022,15 +1257,48 @@ const Crm = () => {
                           <td className="border-b border-r border-border/60 px-2 py-1 text-right text-xs text-muted-foreground">
                             {r + 1}
                           </td>
-                          {active.columns.map((_, c) => (
-                            <td key={c} className="border-b border-r border-border/60 p-0">
-                              <input
-                                value={active.rows[r][c] ?? ""}
-                                onChange={(e) => setCell(r, c, e.target.value)}
-                                className="h-9 w-full bg-transparent px-2 outline-none focus:bg-primary/5 focus:ring-1 focus:ring-inset focus:ring-primary"
-                              />
-                            </td>
-                          ))}
+                          {active.columns.map((_, c) => {
+                            const m = active.meta[c];
+                            const value = active.rows[r][c] ?? "";
+                            const w = widthOf(c);
+                            return (
+                              <td
+                                key={c}
+                                style={{ width: w, minWidth: w, maxWidth: w }}
+                                className="border-b border-r border-border/60 p-0"
+                              >
+                                {m?.type === "choice" ? (
+                                  <div className="relative">
+                                    <select
+                                      value={value}
+                                      onChange={(e) => setCell(r, c, e.target.value)}
+                                      className={cn(
+                                        "h-9 w-full cursor-pointer appearance-none bg-transparent px-2 pr-7 outline-none focus:bg-primary/5 focus:ring-1 focus:ring-inset focus:ring-primary",
+                                        !value && "text-muted-foreground",
+                                      )}
+                                      aria-label={`${active.columns[c] || `Column ${c + 1}`}, row ${r + 1}`}
+                                    >
+                                      <option value="">—</option>
+                                      {/* Keep a value that is no longer in the options so it isn't silently lost. */}
+                                      {value && !(m.options ?? []).includes(value) && <option value={value}>{value}</option>}
+                                      {(m.options ?? []).map((o) => (
+                                        <option key={o} value={o}>
+                                          {o}
+                                        </option>
+                                      ))}
+                                    </select>
+                                    <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                                  </div>
+                                ) : (
+                                  <input
+                                    value={value}
+                                    onChange={(e) => setCell(r, c, e.target.value)}
+                                    className="h-9 w-full bg-transparent px-2 outline-none focus:bg-primary/5 focus:ring-1 focus:ring-inset focus:ring-primary"
+                                  />
+                                )}
+                              </td>
+                            );
+                          })}
                           <td className="border-b border-border/60 p-0 text-center">
                             <button
                               type="button"
@@ -1079,35 +1347,90 @@ const Crm = () => {
         </main>
       </div>
 
-      {/* Add column dialog */}
-      <Dialog open={addColumnOpen} onOpenChange={setAddColumnOpen}>
-        <DialogContent className="sm:max-w-sm">
+      {/* Add / edit column dialog */}
+      <Dialog open={columnDialog !== null} onOpenChange={(open) => !open && setColumnDialog(null)}>
+        <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Add a column</DialogTitle>
-            <DialogDescription>It will be appended to the right of the table.</DialogDescription>
+            <DialogTitle>{columnDialog?.index === null ? "Add a column" : "Column settings"}</DialogTitle>
+            <DialogDescription>
+              {columnDialog?.index === null
+                ? "It will be appended to the right of the table."
+                : "Change how values are entered in this column."}
+            </DialogDescription>
           </DialogHeader>
           <form
             onSubmit={(e) => {
               e.preventDefault();
-              addColumn();
+              saveColumnDialog();
             }}
-            className="space-y-4"
+            className="space-y-5"
           >
             <div className="space-y-2">
-              <Label htmlFor="new-column">Column name</Label>
+              <Label htmlFor="column-name">Column name</Label>
               <Input
-                id="new-column"
+                id="column-name"
                 autoFocus
-                value={newColumnName}
-                onChange={(e) => setNewColumnName(e.target.value)}
+                value={columnDialog?.name ?? ""}
+                onChange={(e) => setColumnDialog((d) => (d ? { ...d, name: e.target.value } : d))}
                 placeholder="e.g. Last called"
               />
             </div>
+
+            <div className="space-y-2">
+              <Label>Entry type</Label>
+              <div className="grid grid-cols-2 gap-2">
+                {(
+                  [
+                    { value: "text", label: "Typing", hint: "Free text in each cell" },
+                    { value: "choice", label: "Choice", hint: "Pick from a list you define" },
+                  ] as { value: ColumnType; label: string; hint: string }[]
+                ).map((opt) => {
+                  const selectedType = (columnDialog?.type ?? "text") === opt.value;
+                  return (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      onClick={() => setColumnDialog((d) => (d ? { ...d, type: opt.value } : d))}
+                      className={cn(
+                        "rounded-md border p-3 text-left transition-colors",
+                        selectedType
+                          ? "border-primary bg-primary/5 ring-1 ring-primary"
+                          : "border-border hover:bg-muted/50",
+                      )}
+                      aria-pressed={selectedType}
+                    >
+                      <div className="text-sm font-medium">{opt.label}</div>
+                      <div className="text-xs text-muted-foreground">{opt.hint}</div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {columnDialog?.type === "choice" && (
+              <div className="space-y-2">
+                <Label htmlFor="column-options">Choices</Label>
+                <textarea
+                  id="column-options"
+                  value={columnDialog.optionsText}
+                  onChange={(e) => setColumnDialog((d) => (d ? { ...d, optionsText: e.target.value } : d))}
+                  rows={5}
+                  placeholder={"One choice per line, e.g.\nNot called\nCalled – no answer\nInterested\nNot interested"}
+                  className="w-full rounded-md border border-input bg-white px-3 py-2 text-sm outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-ring"
+                />
+                <p className="text-xs text-muted-foreground">
+                  {parseOptions(columnDialog.optionsText).length} choice
+                  {parseOptions(columnDialog.optionsText).length === 1 ? "" : "s"}. Cells in this column become a
+                  dropdown. Existing values that aren&apos;t in the list are kept until you change them.
+                </p>
+              </div>
+            )}
+
             <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => setAddColumnOpen(false)}>
+              <Button type="button" variant="outline" onClick={() => setColumnDialog(null)}>
                 Cancel
               </Button>
-              <Button type="submit">Add column</Button>
+              <Button type="submit">{columnDialog?.index === null ? "Add column" : "Save"}</Button>
             </DialogFooter>
           </form>
         </DialogContent>
