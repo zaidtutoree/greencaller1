@@ -87,3 +87,4 @@ To make Claude Code's auto-memory pick up the notes on a new machine, copy `.cla
 | Desk phone (Yealink) | project_deskphone | Own credential connection + on-demand credential per handset; `sip_uri_calling_preference` must be set |
 | iOS push / logout | project_ios_push_tokens | Stale `device_tokens` rang a logged-out iPhone; logout hooks in the Expo repo |
 | CRM | project_crm | `/crm` CSV upload → editable grid in `crm_sheets` (jsonb columns/rows); single account via `is_crm_user()` RLS |
+| WhatsApp | project_whatsapp | Per-user tab granted by admin; Telnyx hosted Meta signup; `whatsapp_*` tables; needs Meta Tech Provider app linked + `TELNYX_WHATSAPP_APP_ID` secret |

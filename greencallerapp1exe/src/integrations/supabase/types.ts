@@ -480,6 +480,183 @@ export type Database = {
         }
         Relationships: []
       }
+      whatsapp_accounts: {
+        Row: {
+          about: string | null
+          address: string | null
+          category: string | null
+          connected_at: string | null
+          connected_phone_number: string | null
+          created_at: string
+          description: string | null
+          display_name: string | null
+          email: string | null
+          enabled: boolean
+          last_error: string | null
+          last_otp_at: string | null
+          last_otp_code: string | null
+          messaging_profile_id: string | null
+          phone_number: string | null
+          phone_number_id: string | null
+          profile_photo_url: string | null
+          signup_expires_at: string | null
+          signup_session_id: string | null
+          signup_state: string | null
+          signup_url: string | null
+          status: string
+          updated_at: string
+          user_id: string
+          waba_id: string | null
+          website: string | null
+        }
+        Insert: {
+          about?: string | null
+          address?: string | null
+          category?: string | null
+          connected_at?: string | null
+          connected_phone_number?: string | null
+          created_at?: string
+          description?: string | null
+          display_name?: string | null
+          email?: string | null
+          enabled?: boolean
+          last_error?: string | null
+          last_otp_at?: string | null
+          last_otp_code?: string | null
+          messaging_profile_id?: string | null
+          phone_number?: string | null
+          phone_number_id?: string | null
+          profile_photo_url?: string | null
+          signup_expires_at?: string | null
+          signup_session_id?: string | null
+          signup_state?: string | null
+          signup_url?: string | null
+          status?: string
+          updated_at?: string
+          user_id: string
+          waba_id?: string | null
+          website?: string | null
+        }
+        Update: {
+          about?: string | null
+          address?: string | null
+          category?: string | null
+          connected_at?: string | null
+          connected_phone_number?: string | null
+          created_at?: string
+          description?: string | null
+          display_name?: string | null
+          email?: string | null
+          enabled?: boolean
+          last_error?: string | null
+          last_otp_at?: string | null
+          last_otp_code?: string | null
+          messaging_profile_id?: string | null
+          phone_number?: string | null
+          phone_number_id?: string | null
+          profile_photo_url?: string | null
+          signup_expires_at?: string | null
+          signup_session_id?: string | null
+          signup_state?: string | null
+          signup_url?: string | null
+          status?: string
+          updated_at?: string
+          user_id?: string
+          waba_id?: string | null
+          website?: string | null
+        }
+        Relationships: []
+      }
+      whatsapp_conversations: {
+        Row: {
+          contact_name: string | null
+          contact_number: string
+          created_at: string
+          id: string
+          last_inbound_at: string | null
+          last_message_at: string | null
+          last_message_preview: string | null
+          unread_count: number
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          contact_name?: string | null
+          contact_number: string
+          created_at?: string
+          id?: string
+          last_inbound_at?: string | null
+          last_message_at?: string | null
+          last_message_preview?: string | null
+          unread_count?: number
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          contact_name?: string | null
+          contact_number?: string
+          created_at?: string
+          id?: string
+          last_inbound_at?: string | null
+          last_message_at?: string | null
+          last_message_preview?: string | null
+          unread_count?: number
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
+      whatsapp_messages: {
+        Row: {
+          body: string | null
+          conversation_id: string
+          created_at: string
+          direction: string
+          error: string | null
+          foreign_id: string | null
+          id: string
+          media_mime: string | null
+          media_url: string | null
+          message_type: string
+          raw: Json | null
+          status: string
+          telnyx_message_id: string | null
+          user_id: string
+        }
+        Insert: {
+          body?: string | null
+          conversation_id: string
+          created_at?: string
+          direction: string
+          error?: string | null
+          foreign_id?: string | null
+          id?: string
+          media_mime?: string | null
+          media_url?: string | null
+          message_type?: string
+          raw?: Json | null
+          status?: string
+          telnyx_message_id?: string | null
+          user_id: string
+        }
+        Update: {
+          body?: string | null
+          conversation_id?: string
+          created_at?: string
+          direction?: string
+          error?: string | null
+          foreign_id?: string | null
+          id?: string
+          media_mime?: string | null
+          media_url?: string | null
+          message_type?: string
+          raw?: Json | null
+          status?: string
+          telnyx_message_id?: string | null
+          user_id?: string
+        }
+        Relationships: []
+      }
       crm_sheets: {
         Row: {
           column_meta: Json

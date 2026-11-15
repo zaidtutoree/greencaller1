@@ -9,11 +9,12 @@ import {
   Settings2,
   CreditCard,
   Bot,
-  Headset
+  Headset,
+  MessageCircle
 } from "lucide-react";
 import brandLogo from "@/assets/brand-logo.png";
 
-type AdminView = "cdr" | "users" | "usage" | "companies" | "departments" | "phones" | "deskphones" | "ivr" | "subscriptions" | "ailab";
+type AdminView = "cdr" | "users" | "usage" | "companies" | "departments" | "phones" | "deskphones" | "ivr" | "subscriptions" | "ailab" | "whatsapp";
 
 interface AdminDashSidebarProps {
   activeView: AdminView;
@@ -31,6 +32,7 @@ const navItems: { id: AdminView; label: string; icon: React.ElementType }[] = [
   { id: "ivr", label: "IVR Config", icon: Settings2 },
   { id: "subscriptions", label: "Subscriptions", icon: CreditCard },
   { id: "ailab", label: "AI Lab", icon: Bot },
+  { id: "whatsapp", label: "WhatsApp", icon: MessageCircle },
 ];
 
 const AdminDashSidebar = ({ activeView, onViewChange }: AdminDashSidebarProps) => {

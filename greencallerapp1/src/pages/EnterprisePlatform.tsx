@@ -23,6 +23,7 @@ import { IncomingCallModal } from "@/components/IncomingCallModal";
 import { CallNoteDialog } from "@/components/CallNoteDialog";
 import { CallNotes } from "@/components/CallNotes";
 import { AIAssistant } from "@/components/AIAssistant";
+import { WhatsAppView } from "@/components/WhatsAppView";
 import { useCallNoteController } from "@/hooks/useCallNoteController";
 import { useCallProvider } from "@/hooks/useCallProvider";
 import { AlertTriangle, RefreshCw } from "lucide-react";
@@ -38,6 +39,7 @@ const TAB_TITLES: Record<string, { title: string; subtitle: string }> = {
   departments: { title: "Switchboard", subtitle: "Department call management" },
   notes: { title: "Call Notes", subtitle: "Notes captured during your calls" },
   "ai-assistant": { title: "AI Assistant", subtitle: "Your AI assistant, its stats and collected data" },
+  whatsapp: { title: "WhatsApp", subtitle: "Business messaging on your WhatsApp number" },
   admin: { title: "Administration", subtitle: "User and system settings" },
 };
 
@@ -47,6 +49,7 @@ export const EnterprisePlatform = ({ userId }: EnterprisePlatformProps) => {
   const [dialpadOpen, setDialpadOpen] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
   const [hasAssistant, setHasAssistant] = useState(false);
+  const [hasWhatsapp, setHasWhatsapp] = useState(false);
   const [queueCount, setQueueCount] = useState(0);
   const [activeTab, setActiveTab] = useState("home");
   const [userEmail, setUserEmail] = useState<string>("");
@@ -134,6 +137,16 @@ export const EnterprisePlatform = ({ userId }: EnterprisePlatformProps) => {
       .eq("assigned_user_id", userId)
       .maybeSingle()
       .then(({ data }) => setHasAssistant(!!data));
+  }, [userId]);
+
+  useEffect(() => {
+    if (!userId) return;
+    supabase
+      .from("whatsapp_accounts")
+      .select("enabled")
+      .eq("user_id", userId)
+      .maybeSingle()
+      .then(({ data }) => setHasWhatsapp(!!data?.enabled));
   }, [userId]);
 
   useEffect(() => {
@@ -350,6 +363,8 @@ export const EnterprisePlatform = ({ userId }: EnterprisePlatformProps) => {
         );
       case "ai-assistant":
         return <AIAssistant userId={userId} />;
+      case "whatsapp":
+        return <WhatsAppView userId={userId} />;
       case "admin":
         return isAdmin ? (
           <div className="p-6 space-y-8 animate-fade-in">
@@ -376,6 +391,7 @@ export const EnterprisePlatform = ({ userId }: EnterprisePlatformProps) => {
         queueCount={queueCount}
         unreadMessageCount={unreadMessageCount}
         hasAssistant={hasAssistant}
+        hasWhatsapp={hasWhatsapp}
         onDialpadOpen={() => setDialpadOpen(true)}
       />
 

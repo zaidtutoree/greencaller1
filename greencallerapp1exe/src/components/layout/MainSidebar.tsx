@@ -10,6 +10,7 @@ import {
   Grid3x3,
   NotebookPen,
   Bot,
+  MessageCircle,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -23,6 +24,7 @@ interface NavItem {
   badge?: number;
   adminOnly?: boolean;
   requiresAssistant?: boolean;
+  requiresWhatsapp?: boolean;
 }
 
 interface MainSidebarProps {
@@ -32,6 +34,7 @@ interface MainSidebarProps {
   queueCount: number;
   unreadMessageCount?: number;
   hasAssistant?: boolean;
+  hasWhatsapp?: boolean;
   onDialpadOpen: () => void;
 }
 
@@ -42,6 +45,7 @@ export const MainSidebar = ({
   queueCount,
   unreadMessageCount = 0,
   hasAssistant = false,
+  hasWhatsapp = false,
   onDialpadOpen,
 }: MainSidebarProps) => {
 
@@ -52,12 +56,13 @@ export const MainSidebar = ({
     // Team messaging lives inside Contacts → Teammates, so unread mail badges here.
     { icon: Users, label: "Contacts", value: "contacts", badge: unreadMessageCount },
     { icon: Bot, label: "AI Assistant", value: "ai-assistant", requiresAssistant: true },
+    { icon: MessageCircle, label: "WhatsApp", value: "whatsapp", requiresWhatsapp: true },
     { icon: Network, label: "Switchboard", value: "departments", badge: queueCount },
     { icon: Settings, label: "Admin", value: "admin", adminOnly: true },
   ];
 
   const filteredNavItems = navItems.filter(item =>
-    (!item.adminOnly || isAdmin) && (!item.requiresAssistant || hasAssistant));
+    (!item.adminOnly || isAdmin) && (!item.requiresAssistant || hasAssistant) && (!item.requiresWhatsapp || hasWhatsapp));
 
   return (
     <TooltipProvider delayDuration={0}>

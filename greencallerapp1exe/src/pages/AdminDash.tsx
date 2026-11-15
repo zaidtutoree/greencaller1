@@ -14,8 +14,9 @@ import PhoneNumbersManagement from "@/components/admin/PhoneNumbersManagement";
 import DeskPhonesManagement from "@/components/admin/DeskPhonesManagement";
 import SubscriptionManagement from "@/components/SubscriptionManagement";
 import { AILab } from "@/components/admin/AILab";
+import { WhatsAppAdmin } from "@/components/admin/WhatsAppAdmin";
 
-type AdminView = "cdr" | "users" | "usage" | "companies" | "departments" | "phones" | "deskphones" | "ivr" | "subscriptions" | "ailab";
+type AdminView = "cdr" | "users" | "usage" | "companies" | "departments" | "phones" | "deskphones" | "ivr" | "subscriptions" | "ailab" | "whatsapp";
 
 const AdminDash = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -33,7 +34,7 @@ const AdminDash = () => {
   useEffect(() => {
     // Parse view from URL hash
     const hash = location.hash.replace("#", "");
-    if (hash && ["cdr", "users", "usage", "companies", "departments", "phones", "deskphones", "ivr", "subscriptions", "ailab"].includes(hash)) {
+    if (hash && ["cdr", "users", "usage", "companies", "departments", "phones", "deskphones", "ivr", "subscriptions", "ailab", "whatsapp"].includes(hash)) {
       setActiveView(hash as AdminView);
     }
   }, [location.hash]);
@@ -129,6 +130,8 @@ const AdminDash = () => {
         return <SubscriptionManagement />;
       case "ailab":
         return <AILab />;
+      case "whatsapp":
+        return <WhatsAppAdmin />;
       default:
         return <LiveCDR />;
     }
