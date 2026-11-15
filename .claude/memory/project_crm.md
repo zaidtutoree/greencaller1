@@ -23,6 +23,20 @@ Multiple lists ("sheets") per account, listed in a left sidebar.
 - Uses normal Supabase Auth (same login as the dashboard), not the `admin-auth` token flow.
 - The account must already exist in Supabase Auth (there is no sign-up on the page).
 
+## Grid features (added 2026-11-15)
+- **Column reorder**: drag the grip handle on a header onto another header (native HTML5 DnD on the
+  `<th>`; only the grip `<span>` is `draggable` so the rename input still takes text selection), or use
+  the ←/→ hover buttons. `moveColumn(from,to)` reorders `columns` AND every row, and re-points `searchCol`.
+- **Row selection**: `selected` is a `Set` of ORIGINAL row indexes. Click the checkbox cell, shift-click
+  for a range (range is computed over `visibleIndexes` display order), header checkbox = this page,
+  "Select all" = all rows matching the current search, "Rows X to Y" = 1-based range picker.
+  `deleteRow` remaps indexes; `switchSheet`/`createSheet` call `resetView()` which clears it.
+- **Move / Copy to new list**: creates a new `crm_sheets` row with the same columns + selected rows
+  (`createSheet` first, then removes rows from the source only if the insert succeeded). New list
+  becomes active and shows in the left Lists panel.
+- **Search**: multi-word AND match; `<select>` next to the box scopes it to one column (`searchCol`,
+  -1 = all). Column delete/move keep `searchCol` pointing at the same column.
+
 ## Gotchas
 - Grid renders one `<input>` per cell, paginated at 50 rows to keep large lists fast.
 - Search filters by original row index so edits on filtered rows hit the right row.

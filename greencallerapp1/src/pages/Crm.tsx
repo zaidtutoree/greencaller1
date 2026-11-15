@@ -4,11 +4,15 @@ import {
   ChevronLeft,
   ChevronRight,
   Columns3,
+  Copy,
   Download,
   FileSpreadsheet,
+  GripVertical,
+  ListChecks,
   Loader2,
   LogOut,
   Plus,
+  Scissors,
   Search,
   Table2,
   Trash2,
@@ -20,6 +24,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -175,13 +180,29 @@ const Crm = () => {
 
   const [saveState, setSaveState] = useState<SaveState>("saved");
   const [search, setSearch] = useState("");
+  /** Column index to search in, or -1 for every column. */
+  const [searchCol, setSearchCol] = useState(-1);
   const [page, setPage] = useState(0);
+
+  /** Selected rows as ORIGINAL row indexes (stable across search filtering). */
+  const [selected, setSelected] = useState<Set<number>>(() => new Set());
+  /** Anchor for shift-click range selection (original row index). */
+  const lastClicked = useRef<number | null>(null);
+  const [rangeFrom, setRangeFrom] = useState("");
+  const [rangeTo, setRangeTo] = useState("");
+
+  /** Column drag-and-drop reordering. */
+  const [dragCol, setDragCol] = useState<number | null>(null);
+  const [overCol, setOverCol] = useState<number | null>(null);
 
   const [addColumnOpen, setAddColumnOpen] = useState(false);
   const [newColumnName, setNewColumnName] = useState("");
+  const [split, setSplit] = useState<{ mode: "move" | "copy"; name: string } | null>(null);
+  const [splitBusy, setSplitBusy] = useState(false);
   const [confirm, setConfirm] = useState<
     | { kind: "sheet"; id: string; label: string }
     | { kind: "column"; index: number; label: string }
+    | { kind: "rows"; count: number }
     | null
   >(null);
 
@@ -295,8 +316,18 @@ const Crm = () => {
   }, []);
 
   // ── Sheet actions ──────────────────────────────────────────────────────
-  const createSheet = async (name: string, columns: string[], rows: string[][]) => {
-    if (!session?.user) return;
+  const resetView = () => {
+    setSearch("");
+    setSearchCol(-1);
+    setPage(0);
+    setSelected(new Set());
+    lastClicked.current = null;
+    setRangeFrom("");
+    setRangeTo("");
+  };
+
+  const createSheet = async (name: string, columns: string[], rows: string[][]): Promise<Sheet | null> => {
+    if (!session?.user) return null;
     const { data, error } = await supabase
       .from("crm_sheets")
       .insert({ user_id: session.user.id, name, columns, rows })
@@ -304,14 +335,14 @@ const Crm = () => {
       .single();
     if (error || !data) {
       toast({ title: "Could not create list", description: error?.message, variant: "destructive" });
-      return;
+      return null;
     }
     const sheet = normaliseSheet(data);
     setSheets((prev) => [sheet, ...prev]);
     setActiveId(sheet.id);
-    setSearch("");
-    setPage(0);
+    resetView();
     toast({ title: "List created", description: `${rows.length} rows, ${columns.length} columns.` });
+    return sheet;
   };
 
   const handleUpload = async (file: File) => {
@@ -333,8 +364,7 @@ const Crm = () => {
   const switchSheet = async (id: string) => {
     await flushSaves();
     setActiveId(id);
-    setSearch("");
-    setPage(0);
+    resetView();
   };
 
   const deleteSheet = async (id: string) => {
@@ -398,6 +428,113 @@ const Crm = () => {
   const deleteRow = (rowIndex: number) => {
     if (!active) return;
     updateSheet(active.id, (s) => ({ ...s, rows: s.rows.filter((_, i) => i !== rowIndex) }));
+    // Keep the selection pointing at the same rows after indexes shift down.
+    setSelected((prev) => {
+      if (prev.size === 0) return prev;
+      const next = new Set<number>();
+      prev.forEach((i) => {
+        if (i < rowIndex) next.add(i);
+        else if (i > rowIndex) next.add(i - 1);
+      });
+      return next;
+    });
+    lastClicked.current = null;
+  };
+
+  const moveColumn = (from: number, to: number) => {
+    if (!active || from === to || from < 0 || to < 0) return;
+    if (from >= active.columns.length || to >= active.columns.length) return;
+    const reorder = <T,>(arr: T[]): T[] => {
+      const next = arr.slice();
+      const [item] = next.splice(from, 1);
+      next.splice(to, 0, item);
+      return next;
+    };
+    updateSheet(active.id, (s) => ({
+      ...s,
+      columns: reorder(s.columns),
+      rows: s.rows.map((r) => reorder(r)),
+    }));
+    // Follow the column being searched so the filter keeps meaning the same thing.
+    setSearchCol((sc) => {
+      if (sc < 0) return sc;
+      if (sc === from) return to;
+      if (from < sc && sc <= to) return sc - 1;
+      if (to <= sc && sc < from) return sc + 1;
+      return sc;
+    });
+  };
+
+  // ── Row selection ──────────────────────────────────────────────────────
+  const toggleRow = (rowIndex: number, shiftKey: boolean, visibleOrder: number[]) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      const anchor = lastClicked.current;
+      if (shiftKey && anchor !== null && anchor !== rowIndex) {
+        // Select every visible row between the anchor and this one, in display order.
+        const a = visibleOrder.indexOf(anchor);
+        const b = visibleOrder.indexOf(rowIndex);
+        if (a !== -1 && b !== -1) {
+          const [lo, hi] = a < b ? [a, b] : [b, a];
+          for (let i = lo; i <= hi; i++) next.add(visibleOrder[i]);
+          return next;
+        }
+      }
+      if (next.has(rowIndex)) next.delete(rowIndex);
+      else next.add(rowIndex);
+      return next;
+    });
+    lastClicked.current = rowIndex;
+  };
+
+  const setManySelected = (indexes: number[], on: boolean) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      indexes.forEach((i) => (on ? next.add(i) : next.delete(i)));
+      return next;
+    });
+  };
+
+  const clearSelection = () => {
+    setSelected(new Set());
+    lastClicked.current = null;
+  };
+
+  /** Select rows by 1-based row number, e.g. 1 to 80. */
+  const selectRange = () => {
+    if (!active) return;
+    const from = parseInt(rangeFrom, 10);
+    const to = parseInt(rangeTo, 10);
+    if (!Number.isFinite(from) || !Number.isFinite(to)) return;
+    const lo = Math.max(1, Math.min(from, to));
+    const hi = Math.min(active.rows.length, Math.max(from, to));
+    if (lo > hi) return;
+    const indexes: number[] = [];
+    for (let n = lo; n <= hi; n++) indexes.push(n - 1);
+    setManySelected(indexes, true);
+  };
+
+  const deleteSelectedRows = () => {
+    if (!active || selected.size === 0) return;
+    updateSheet(active.id, (s) => ({ ...s, rows: s.rows.filter((_, i) => !selected.has(i)) }));
+    clearSelection();
+  };
+
+  /** Move (or copy) the selected rows into a brand-new list with the same columns. */
+  const splitSelectedRows = async () => {
+    if (!active || !split || selected.size === 0) return;
+    const source = active;
+    const picked = Array.from(selected).sort((a, b) => a - b);
+    const rows = picked.map((i) => source.rows[i].slice());
+    const name = split.name.trim() || `${source.name} (part)`;
+    setSplitBusy(true);
+    const created = await createSheet(name, source.columns.slice(), rows);
+    setSplitBusy(false);
+    if (!created) return;
+    if (split.mode === "move") {
+      updateSheet(source.id, (s) => ({ ...s, rows: s.rows.filter((_, i) => !selected.has(i)) }));
+    }
+    setSplit(null);
   };
 
   const addColumn = () => {
@@ -419,20 +556,34 @@ const Crm = () => {
       columns: s.columns.filter((_, i) => i !== colIndex),
       rows: s.rows.map((r) => r.filter((_, i) => i !== colIndex)),
     }));
+    setSearchCol((sc) => (sc === colIndex ? -1 : sc > colIndex ? sc - 1 : sc));
   };
 
   // ── Derived view ───────────────────────────────────────────────────────
   const visibleIndexes = useMemo(() => {
     if (!active) return [] as number[];
-    const q = search.trim().toLowerCase();
+    // Every word typed must appear somewhere in the row (or in the chosen column).
+    const words = search.trim().toLowerCase().split(/\s+/).filter(Boolean);
     const all = active.rows.map((_, i) => i);
-    if (!q) return all;
-    return all.filter((i) => active.rows[i].some((c) => c.toLowerCase().includes(q)));
-  }, [active, search]);
+    if (words.length === 0) return all;
+    const scoped = searchCol >= 0 && searchCol < active.columns.length ? searchCol : -1;
+    return all.filter((i) => {
+      const row = active.rows[i];
+      const haystack = scoped === -1 ? row.join(" \u0000 ").toLowerCase() : (row[scoped] ?? "").toLowerCase();
+      return words.every((w) => haystack.includes(w));
+    });
+  }, [active, search, searchCol]);
 
   const pageCount = Math.max(1, Math.ceil(visibleIndexes.length / PAGE_SIZE));
   const safePage = Math.min(page, pageCount - 1);
   const pageIndexes = visibleIndexes.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE);
+
+  const visibleSelectedCount = useMemo(
+    () => visibleIndexes.reduce((n, i) => n + (selected.has(i) ? 1 : 0), 0),
+    [visibleIndexes, selected],
+  );
+  const allVisibleSelected = visibleIndexes.length > 0 && visibleSelectedCount === visibleIndexes.length;
+  const pageAllSelected = pageIndexes.length > 0 && pageIndexes.every((i) => selected.has(i));
 
   /* ───────────────────────────── render ───────────────────────────── */
 
@@ -586,17 +737,37 @@ const Crm = () => {
                   className="h-9 w-56 font-medium"
                   aria-label="List name"
                 />
-                <div className="relative">
-                  <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-                  <Input
-                    value={search}
+                <div className="flex items-center overflow-hidden rounded-md border border-input bg-white focus-within:ring-1 focus-within:ring-ring">
+                  <div className="relative">
+                    <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+                    <input
+                      value={search}
+                      onChange={(e) => {
+                        setSearch(e.target.value);
+                        setPage(0);
+                      }}
+                      placeholder={searchCol === -1 ? "Search all columns…" : `Search ${active.columns[searchCol] || "column"}…`}
+                      className="h-9 w-52 bg-transparent pl-8 pr-2 text-sm outline-none placeholder:text-muted-foreground"
+                      aria-label="Search rows"
+                    />
+                  </div>
+                  <select
+                    value={searchCol}
                     onChange={(e) => {
-                      setSearch(e.target.value);
+                      setSearchCol(Number(e.target.value));
                       setPage(0);
                     }}
-                    placeholder="Search rows…"
-                    className="h-9 w-56 pl-8"
-                  />
+                    className="h-9 max-w-[140px] cursor-pointer border-l border-input bg-muted/40 px-2 text-xs text-muted-foreground outline-none hover:bg-muted"
+                    aria-label="Column to search in"
+                    title="Which column to search"
+                  >
+                    <option value={-1}>All columns</option>
+                    {active.columns.map((col, c) => (
+                      <option key={c} value={c}>
+                        {col || `Column ${c + 1}`}
+                      </option>
+                    ))}
+                  </select>
                 </div>
                 <span className="text-xs text-muted-foreground">
                   {visibleIndexes.length === active.rows.length
@@ -624,31 +795,193 @@ const Crm = () => {
                 </div>
               </div>
 
+              {/* Selection bar */}
+              <div
+                className={cn(
+                  "flex flex-wrap items-center gap-2 border-b border-border/60 px-3 py-2 text-xs",
+                  selected.size > 0 ? "bg-primary/5" : "bg-muted/20",
+                )}
+              >
+                <ListChecks className="h-4 w-4 text-muted-foreground" />
+                {selected.size > 0 ? (
+                  <span className="font-medium text-foreground">
+                    {selected.size} row{selected.size === 1 ? "" : "s"} selected
+                  </span>
+                ) : (
+                  <span className="text-muted-foreground">
+                    Tick rows to select them. Shift-click selects a range.
+                  </span>
+                )}
+
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    selectRange();
+                  }}
+                  className="flex items-center gap-1 text-muted-foreground"
+                >
+                  <span className="ml-2">Rows</span>
+                  <input
+                    value={rangeFrom}
+                    onChange={(e) => setRangeFrom(e.target.value.replace(/\D/g, ""))}
+                    inputMode="numeric"
+                    placeholder="1"
+                    className="h-7 w-14 rounded border border-input bg-white px-1.5 text-center text-xs outline-none focus:ring-1 focus:ring-ring"
+                    aria-label="Select from row number"
+                  />
+                  <span>to</span>
+                  <input
+                    value={rangeTo}
+                    onChange={(e) => setRangeTo(e.target.value.replace(/\D/g, ""))}
+                    inputMode="numeric"
+                    placeholder={String(Math.min(80, active.rows.length) || 1)}
+                    className="h-7 w-14 rounded border border-input bg-white px-1.5 text-center text-xs outline-none focus:ring-1 focus:ring-ring"
+                    aria-label="Select to row number"
+                  />
+                  <Button type="submit" size="sm" variant="outline" className="h-7 px-2 text-xs">
+                    Select
+                  </Button>
+                </form>
+
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 px-2 text-xs"
+                  onClick={() => setManySelected(visibleIndexes, !allVisibleSelected)}
+                  disabled={visibleIndexes.length === 0}
+                >
+                  {allVisibleSelected ? "Unselect all" : search ? `Select all ${visibleIndexes.length} matching` : "Select all"}
+                </Button>
+
+                {selected.size > 0 && (
+                  <div className="ml-auto flex flex-wrap items-center gap-1.5">
+                    <Button
+                      size="sm"
+                      className="h-7 px-2.5 text-xs"
+                      onClick={() => setSplit({ mode: "move", name: `${active.name} – part` })}
+                    >
+                      <Scissors className="mr-1.5 h-3.5 w-3.5" /> Move to new list
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 px-2.5 text-xs"
+                      onClick={() => setSplit({ mode: "copy", name: `${active.name} – copy` })}
+                    >
+                      <Copy className="mr-1.5 h-3.5 w-3.5" /> Copy to new list
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 px-2.5 text-xs text-destructive hover:text-destructive"
+                      onClick={() => setConfirm({ kind: "rows", count: selected.size })}
+                    >
+                      <Trash2 className="mr-1.5 h-3.5 w-3.5" /> Delete
+                    </Button>
+                    <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={clearSelection}>
+                      <X className="mr-1 h-3.5 w-3.5" /> Clear
+                    </Button>
+                  </div>
+                )}
+              </div>
+
               {/* Grid */}
               <div className="flex-1 overflow-auto">
                 <table className="w-max min-w-full border-collapse text-sm">
                   <thead className="sticky top-0 z-10 bg-muted/60 backdrop-blur">
                     <tr>
+                      <th className="w-9 border-b border-r border-border/60 p-0 text-center">
+                        <div className="flex h-9 items-center justify-center">
+                          <Checkbox
+                            checked={pageAllSelected ? true : pageIndexes.some((i) => selected.has(i)) ? "indeterminate" : false}
+                            onCheckedChange={() => setManySelected(pageIndexes, !pageAllSelected)}
+                            aria-label="Select all rows on this page"
+                            title="Select all rows on this page"
+                            disabled={pageIndexes.length === 0}
+                          />
+                        </div>
+                      </th>
                       <th className="w-10 border-b border-r border-border/60 px-2 py-1.5 text-right text-xs font-normal text-muted-foreground">
                         #
                       </th>
                       {active.columns.map((col, c) => (
-                        <th key={c} className="group min-w-[160px] border-b border-r border-border/60 p-0 text-left">
+                        <th
+                          key={c}
+                          onDragOver={(e) => {
+                            if (dragCol === null) return;
+                            e.preventDefault();
+                            e.dataTransfer.dropEffect = "move";
+                            if (overCol !== c) setOverCol(c);
+                          }}
+                          onDragLeave={() => {
+                            if (overCol === c) setOverCol(null);
+                          }}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            if (dragCol !== null) moveColumn(dragCol, c);
+                            setDragCol(null);
+                            setOverCol(null);
+                          }}
+                          className={cn(
+                            "group min-w-[180px] border-b border-r border-border/60 p-0 text-left transition-colors",
+                            dragCol === c && "opacity-50",
+                            overCol === c && dragCol !== null && dragCol !== c && "bg-primary/10",
+                            overCol === c && dragCol !== null && dragCol > c && "shadow-[inset_3px_0_0_0_hsl(var(--primary))]",
+                            overCol === c && dragCol !== null && dragCol < c && "shadow-[inset_-3px_0_0_0_hsl(var(--primary))]",
+                          )}
+                        >
                           <div className="flex items-center">
+                            <span
+                              draggable
+                              onDragStart={(e) => {
+                                e.dataTransfer.effectAllowed = "move";
+                                e.dataTransfer.setData("text/plain", String(c));
+                                setDragCol(c);
+                              }}
+                              onDragEnd={() => {
+                                setDragCol(null);
+                                setOverCol(null);
+                              }}
+                              title="Drag to reorder column"
+                              className="flex h-9 w-5 shrink-0 cursor-grab items-center justify-center text-muted-foreground/60 hover:text-foreground active:cursor-grabbing"
+                            >
+                              <GripVertical className="h-3.5 w-3.5" />
+                            </span>
                             <input
                               value={col}
                               onChange={(e) => renameColumn(c, e.target.value)}
-                              className="h-9 w-full bg-transparent px-2 text-xs font-semibold uppercase tracking-wide text-foreground outline-none focus:bg-white"
+                              className="h-9 w-full min-w-0 bg-transparent px-1 text-xs font-semibold uppercase tracking-wide text-foreground outline-none focus:bg-white"
                               aria-label={`Column ${c + 1} name`}
                             />
-                            <button
-                              type="button"
-                              title="Delete column"
-                              onClick={() => setConfirm({ kind: "column", index: c, label: col })}
-                              className="mr-1 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
-                            >
-                              <X className="h-3.5 w-3.5" />
-                            </button>
+                            <div className="flex shrink-0 items-center opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+                              <button
+                                type="button"
+                                title="Move column left"
+                                disabled={c === 0}
+                                onClick={() => moveColumn(c, c - 1)}
+                                className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30 disabled:hover:bg-transparent"
+                              >
+                                <ChevronLeft className="h-3.5 w-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                title="Move column right"
+                                disabled={c === active.columns.length - 1}
+                                onClick={() => moveColumn(c, c + 1)}
+                                className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30 disabled:hover:bg-transparent"
+                              >
+                                <ChevronRight className="h-3.5 w-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                title="Delete column"
+                                onClick={() => setConfirm({ kind: "column", index: c, label: col })}
+                                className="mr-1 rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                              >
+                                <X className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
                           </div>
                         </th>
                       ))}
@@ -659,7 +992,7 @@ const Crm = () => {
                     {pageIndexes.length === 0 ? (
                       <tr>
                         <td
-                          colSpan={active.columns.length + 2}
+                          colSpan={active.columns.length + 3}
                           className="px-4 py-10 text-center text-sm text-muted-foreground"
                         >
                           {search ? "No rows match your search." : "No rows yet. Add one with the Row button."}
@@ -667,7 +1000,25 @@ const Crm = () => {
                       </tr>
                     ) : (
                       pageIndexes.map((r) => (
-                        <tr key={r} className="group hover:bg-muted/30">
+                        <tr
+                          key={r}
+                          className={cn("group hover:bg-muted/30", selected.has(r) && "bg-primary/5 hover:bg-primary/10")}
+                        >
+                          <td
+                            className="cursor-pointer select-none border-b border-r border-border/60 p-0 text-center"
+                            onClick={(e) => {
+                              // Whole cell is a click target so the user can run down the column quickly.
+                              e.preventDefault();
+                              toggleRow(r, e.shiftKey, visibleIndexes);
+                            }}
+                            onMouseDown={(e) => {
+                              if (e.shiftKey) e.preventDefault(); // stop text selection on shift-click
+                            }}
+                          >
+                            <div className="pointer-events-none flex h-9 items-center justify-center">
+                              <Checkbox checked={selected.has(r)} tabIndex={-1} aria-label={`Select row ${r + 1}`} />
+                            </div>
+                          </td>
                           <td className="border-b border-r border-border/60 px-2 py-1 text-right text-xs text-muted-foreground">
                             {r + 1}
                           </td>
@@ -762,17 +1113,70 @@ const Crm = () => {
         </DialogContent>
       </Dialog>
 
+      {/* Move / copy selected rows into a new list */}
+      <Dialog open={split !== null} onOpenChange={(open) => !open && !splitBusy && setSplit(null)}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>{split?.mode === "move" ? "Move rows to a new list" : "Copy rows to a new list"}</DialogTitle>
+            <DialogDescription>
+              {selected.size} selected row{selected.size === 1 ? "" : "s"} will{" "}
+              {split?.mode === "move" ? "be moved out of this list and into" : "be copied into"} a new list with the
+              same columns. It will appear in the Lists panel on the left.
+            </DialogDescription>
+          </DialogHeader>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              splitSelectedRows();
+            }}
+            className="space-y-4"
+          >
+            <div className="space-y-2">
+              <Label htmlFor="split-name">New list name</Label>
+              <Input
+                id="split-name"
+                autoFocus
+                value={split?.name ?? ""}
+                onChange={(e) => setSplit((s) => (s ? { ...s, name: e.target.value } : s))}
+                placeholder="e.g. Batch 2"
+              />
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setSplit(null)} disabled={splitBusy}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={splitBusy}>
+                {splitBusy ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : split?.mode === "move" ? (
+                  <Scissors className="mr-2 h-4 w-4" />
+                ) : (
+                  <Copy className="mr-2 h-4 w-4" />
+                )}
+                {split?.mode === "move" ? "Move rows" : "Copy rows"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
       {/* Delete confirmations */}
       <AlertDialog open={confirm !== null} onOpenChange={(open) => !open && setConfirm(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>
-              {confirm?.kind === "sheet" ? "Delete this list?" : "Delete this column?"}
+              {confirm?.kind === "sheet"
+                ? "Delete this list?"
+                : confirm?.kind === "rows"
+                  ? `Delete ${confirm.count} selected row${confirm.count === 1 ? "" : "s"}?`
+                  : "Delete this column?"}
             </AlertDialogTitle>
             <AlertDialogDescription>
               {confirm?.kind === "sheet"
                 ? `"${confirm.label || "Untitled list"}" and all of its rows will be permanently removed.`
-                : `"${confirm?.label || "Column"}" and its values in every row will be removed.`}
+                : confirm?.kind === "rows"
+                  ? "The selected rows will be removed from this list. This can't be undone."
+                  : `"${confirm?.label || "Column"}" and its values in every row will be removed.`}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -782,6 +1186,7 @@ const Crm = () => {
               onClick={() => {
                 if (confirm?.kind === "sheet") deleteSheet(confirm.id);
                 if (confirm?.kind === "column") deleteColumn(confirm.index);
+                if (confirm?.kind === "rows") deleteSelectedRows();
                 setConfirm(null);
               }}
             >
