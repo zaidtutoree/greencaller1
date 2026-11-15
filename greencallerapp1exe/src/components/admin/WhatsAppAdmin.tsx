@@ -16,12 +16,14 @@ import { cn } from "@/lib/utils";
 
 interface Readiness {
   ready: boolean;
-  telnyx_key: boolean;
   app_id: string | null;
-  app_linked: boolean;
-  solution_id: string | null;
-  messaging_profile_id: string | null;
-  signup_webhook_set: boolean;
+  app_secret: boolean;
+  config_id: string | null;
+  verify_token: boolean;
+  app_name: string | null;
+  webhook_subscribed: boolean;
+  webhook_fields: string[];
+  webhook_callback?: string | null;
   webhook_url: string;
   errors: string[];
 }
@@ -94,7 +96,7 @@ export const WhatsAppAdmin = () => {
     else setChecking(true);
     try {
       setReadiness(await call({ action: setup ? "setup" : "readiness" }));
-      if (setup) toast({ title: "Setup finished", description: "Messaging profile and signup webhook configured at Telnyx." });
+      if (setup) toast({ title: "Setup finished", description: "Webhook subscription registered with Meta." });
     } catch (e: unknown) {
       toast({ title: setup ? "Setup failed" : "Readiness check failed", description: (e as Error).message, variant: "destructive" });
     } finally {
@@ -147,7 +149,7 @@ export const WhatsAppAdmin = () => {
     setBusyUser(a.user_id);
     try {
       await call({ action: "remove", userId: a.user_id });
-      toast({ title: "Removed", description: "WhatsApp access removed. The number stays registered at Meta until deregistered in the Telnyx portal." });
+      toast({ title: "Removed", description: "WhatsApp access removed. The number stays registered in the customer's own Meta account." });
       await load();
     } catch (e: unknown) {
       toast({ title: "Remove failed", description: (e as Error).message, variant: "destructive" });
@@ -176,7 +178,7 @@ export const WhatsAppAdmin = () => {
         </div>
         <div>
           <h1 className="text-2xl font-semibold">WhatsApp Business</h1>
-          <p className="text-sm text-muted-foreground">Grant users a WhatsApp tab on one of their Telnyx numbers. They connect it themselves through Meta.</p>
+          <p className="text-sm text-muted-foreground">Grant users a WhatsApp tab on one of their numbers. They connect their own Meta business through the WhatsApp tab; Meta bills them directly.</p>
         </div>
       </div>
 
@@ -185,14 +187,14 @@ export const WhatsAppAdmin = () => {
         <CardContent className="p-5">
           <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
             <div>
-              <h2 className="font-semibold">Telnyx / Meta readiness</h2>
-              <p className="text-xs text-muted-foreground">Everything below must be green before users can connect.</p>
+              <h2 className="font-semibold">Meta app readiness</h2>
+              <p className="text-xs text-muted-foreground">Everything below must be green before users can connect. Secrets are set in Supabase → Edge Functions → Secrets.</p>
             </div>
             <div className="flex gap-2">
               <Button size="sm" variant="outline" onClick={() => check(false)} disabled={checking}>
                 {checking ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-1.5 h-4 w-4" />} Re-check
               </Button>
-              <Button size="sm" onClick={() => check(true)} disabled={settingUp || !readiness?.telnyx_key}>
+              <Button size="sm" onClick={() => check(true)} disabled={settingUp || !readiness?.app_id || !readiness?.app_secret || !readiness?.verify_token}>
                 {settingUp ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <Wrench className="mr-1.5 h-4 w-4" />} Run setup
               </Button>
             </div>
@@ -201,15 +203,16 @@ export const WhatsAppAdmin = () => {
             <div className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Checking…</div>
           ) : (
             <div className="grid gap-3 md:grid-cols-2">
-              <Check ok={readiness.telnyx_key} label="TELNYX_API_KEY secret set" />
-              <Check ok={!!readiness.app_id} label="TELNYX_WHATSAPP_APP_ID secret set (Meta Tech Provider app)" detail={readiness.app_id} />
-              <Check ok={readiness.app_linked} label="Meta app linked to this Telnyx account" detail={readiness.solution_id ? `solution_id ${readiness.solution_id}` : null} />
-              <Check ok={!!readiness.messaging_profile_id} label="Shared messaging profile (inbound webhook)" detail={readiness.messaging_profile_id} />
-              <Check ok={readiness.signup_webhook_set} label="Signup completion webhook registered" />
-              <div className="flex items-start gap-2 text-sm">
+              <Check ok={!!readiness.app_id} label="META_APP_ID secret set" detail={readiness.app_id} />
+              <Check ok={readiness.app_secret} label="META_APP_SECRET secret set" />
+              <Check ok={!!readiness.config_id} label="META_CONFIG_ID secret set (Embedded Signup configuration)" detail={readiness.config_id} />
+              <Check ok={readiness.verify_token} label="META_WEBHOOK_VERIFY_TOKEN secret set" />
+              <Check ok={!!readiness.app_name} label="Meta accepts the app credentials" detail={readiness.app_name ? `app "${readiness.app_name}"` : null} />
+              <Check ok={readiness.webhook_subscribed} label="Webhook subscribed for WhatsApp messages" detail={readiness.webhook_fields.length ? readiness.webhook_fields.join(", ") : null} />
+              <div className="flex items-start gap-2 text-sm md:col-span-2">
                 <Copy className="mt-0.5 h-4 w-4 shrink-0 cursor-pointer text-muted-foreground" onClick={() => navigator.clipboard.writeText(readiness.webhook_url)} />
                 <div>
-                  <div>Webhook URL</div>
+                  <div>Webhook URL (Run setup registers it; or paste it in the Meta app under WhatsApp → Configuration)</div>
                   <div className="break-all font-mono text-xs text-muted-foreground">{readiness.webhook_url}</div>
                 </div>
               </div>
@@ -242,7 +245,7 @@ export const WhatsAppAdmin = () => {
               </Select>
             </div>
             <div className="space-y-1.5">
-              <Label>Telnyx number to use for WhatsApp</Label>
+              <Label>Number to use for WhatsApp</Label>
               <Select value={selNumber} onValueChange={setSelNumber} disabled={!selUser}>
                 <SelectTrigger><SelectValue placeholder={selUser ? "Choose a number" : "Pick a user first"} /></SelectTrigger>
                 <SelectContent>
@@ -261,7 +264,7 @@ export const WhatsAppAdmin = () => {
             </div>
           </div>
           <p className="mt-2 text-xs text-muted-foreground">
-            The number must not already be on a personal WhatsApp or WhatsApp Business app. The user will enter this exact number in Meta&apos;s signup window.
+            The number must not already be on a personal WhatsApp or WhatsApp Business app. The user will enter this exact number in Meta&apos;s signup window and verify it by a phone call answered in Greencaller.
           </p>
         </CardContent>
       </Card>

@@ -1,64 +1,79 @@
 ---
-name: WhatsApp Business (Telnyx)
-description: Per-user WhatsApp tab — admin grants it on a Telnyx number, user connects via Telnyx hosted Meta Embedded Signup, chat + business profile in-app. Tables, functions, prerequisites, traps.
+name: WhatsApp Business (Meta Cloud API direct)
+description: Per-user WhatsApp tab — admin grants it on a number, user connects THEIR OWN Meta business via Embedded Signup in-page, chat + business profile in-app. Meta bills the customer. Tables, functions, secrets, Meta app setup, traps.
 type: project
 ---
 
-## What it is (built 2026-11-15, not yet deployed/tested live)
-Admin dashboard → **WhatsApp** tab grants a user WhatsApp on one of their Telnyx numbers. The user then
-gets a **WhatsApp** tab (basic/premium `AppSidebar` route `/dashboard/whatsapp`; enterprise `MainSidebar`
-tab `whatsapp`) where they: click Connect (opens Telnyx **hosted signup** = Meta Embedded Signup on
-`acct.fyi`), register the assigned number, then send/receive messages and edit the business profile
-(photo, display name, about, description, category, email, website, address).
+## Decision history
+- 2026-11-15: first built on Telnyx's WhatsApp API (hosted signup). Blocked: Telnyx's own portal
+  button uses Telnyx's Meta app; getting it into Greencaller needs a Greencaller Meta Tech Provider
+  app linked by Telnyx support anyway. Zaid chose to **go direct to Meta** so customers own their
+  WABA and Meta bills them (no Telnyx markup / support ticket). Telnyx code removed same day.
+- PDL CRM (`C:\Users\zaid\Downloads\PDLU`) looks similar but its Connect button is a bare link to
+  business.facebook.com; numbers were onboarded by hand in the Telnyx portal. Not a reference.
+
+## What it is
+Admin dashboard → **WhatsApp** tab grants a user WhatsApp on one of their numbers. The user's
+**WhatsApp** tab (basic/premium route `/dashboard/whatsapp`; enterprise `MainSidebar` tab
+`whatsapp`) opens Meta's Embedded Signup popup (Facebook JS SDK, `FB.login` with `config_id`,
+`response_type: 'code'`); the customer logs into THEIR Facebook, creates THEIR portfolio + WABA,
+registers the assigned number (OTP by voice call → answered in Greencaller, or SMS). The popup's
+`WA_EMBEDDED_SIGNUP` FINISH message gives `waba_id`/`phone_number_id`; the login callback gives a
+30-second `code`. Frontend posts both to `whatsapp-connect {action:"complete"}`.
 
 ## Pieces
-- Migration `supabase/migrations/20261115000000_create_whatsapp.sql`: `whatsapp_accounts` (user_id PK,
-  SELECT-only for users — all writes via service role so users can't self-enable), `whatsapp_conversations`
-  (users may UPDATE own rows: mark read / rename), `whatsapp_messages` (read-only), `whatsapp_config`
-  (service only; holds `messaging_profile_id`, `signup_webhook_set`). All three user tables are in the
-  realtime publication.
-- Edge functions (all `verify_jwt = false` in config.toml):
-  - `admin-whatsapp` (x-admin-token): readiness / setup / list / enable / disable / remove.
-  - `whatsapp-connect` (user JWT): status (polls Telnyx signup session, finalises), start, reset, profile,
-    update-profile, upload-photo (base64 → multipart), delete-photo, templates.
-  - `whatsapp-send` (user JWT): text | template | media → `POST /v2/messages/whatsapp`, stores row.
-  - `telnyx-whatsapp-webhook` (public): message.received (WHATSAPP → store; SMS → OTP capture),
-    message.sent/finalized/read → status, `whatsapp.waba_added` → signup state. Optional Ed25519 check
-    when `TELNYX_PUBLIC_KEY` secret is set.
-- Frontend: `components/WhatsAppView.tsx` (user), `components/admin/WhatsAppAdmin.tsx` (admin). Both copied
-  to the exe app. `Dashboard.tsx` / `EnterprisePlatform.tsx` edited by hand in each app.
+- Migrations `20261115000000_create_whatsapp.sql` (tables) + `20261116000000_whatsapp_meta_direct.sql`
+  (`business_id`, `name_status`, `whatsapp_secrets` service-only table for the business token + PIN,
+  private storage bucket `whatsapp-media` with per-user folder read policy).
+- `supabase/functions/_shared/meta-whatsapp.ts` — Graph helper (`graph()`, `graphError`, `isAuthError`,
+  `copyMediaToStorage`, field lists). Graph version pinned in `GRAPH_VERSION`.
+- Edge functions (all `verify_jwt = false`):
+  - `admin-whatsapp` (x-admin-token): readiness (secrets, app token check via `/{app_id}`, app
+    webhook subscription via `/{app_id}/subscriptions`), setup (POST subscription → Meta immediately
+    GETs the webhook with hub.challenge, so deploy the webhook first), list / enable / disable / remove.
+  - `whatsapp-connect` (user JWT): config, status, complete (code→token, `POST /{waba}/subscribed_apps`,
+    verify `display_phone_number` matches the assigned number, `POST /{pnid}/register {pin}`, cache
+    profile), reset, profile, update-profile (`whatsapp_business_profile`; display name via
+    `POST /{pnid}?new_display_name=`), upload-photo (Resumable Upload API → `profile_picture_handle`),
+    templates (`/{waba}/message_templates?status=APPROVED`), media (lazy copy to storage), mark-read.
+  - `whatsapp-send` (user JWT): `POST /{pnid}/messages` text | template | media-by-link. Stores wamid in
+    `whatsapp_messages.foreign_id` (the `telnyx_message_id` column is now unused).
+  - `meta-whatsapp-webhook` (public): GET handshake (`META_WEBHOOK_VERIFY_TOKEN`), POST with
+    `X-Hub-Signature-256` HMAC check (skipped only if `META_APP_SECRET` unset). Handles `messages`
+    (inbound + statuses, media copied to storage immediately — Meta URLs die in 5 min),
+    `phone_number_name_update` (re-registers number on APPROVED), logs `account_update`.
+- Frontend: `components/WhatsAppView.tsx` (user), `components/admin/WhatsAppAdmin.tsx` (admin),
+  copied to exe. Connect is disabled inside Electron (FB popup) — connect from greencaller.app.
 
-## Prerequisites Zaid must do once (the feature is dead without them)
-1. Meta: Business account + a **Business-type app** with `whatsapp_business_messaging` and
-   `whatsapp_business_management` (Advanced Access for prod), complete **Tech Provider** onboarding, app in Live mode.
-2. Email Telnyx support with the Meta App ID + business name → accept Meta partner invite.
-   Verify with `GET /v2/whatsapp/foreign_apps` (enabled + solution_id). Admin tab shows this as "Meta app linked".
-3. Supabase secret `TELNYX_WHATSAPP_APP_ID` = that App ID. (`TELNYX_API_KEY` already exists.)
-4. Admin tab → **Run setup**: creates messaging profile "Greencaller WhatsApp" (webhook → our function)
-   and `PATCH /v2/whatsapp/user_data` signup webhook.
-5. Deploy the 4 functions from repo root; run the migration.
+## Secrets (Supabase → Edge Functions → Secrets)
+`META_APP_ID`, `META_APP_SECRET`, `META_CONFIG_ID` (Facebook Login for Business → Configurations →
+Embedded Signup config), `META_WEBHOOK_VERIFY_TOKEN` (any random string). Redeploy functions after setting.
 
-## Telnyx/Meta facts that shaped the design
-- Hosted signup: `POST /v2/whatsapp/hosted_signups {app_id, expires_at≤3d}` → `{id, url}`; no return URL,
-  so the UI polls `GET /v2/whatsapp/signup/{id}/status` every 4 s. `state` steps: SUBSCRIBE_WEBHOOKS →
-  ASSIGNED_USERS → SHARE_CREDIT_LINE → REGISTER_PHONE_NUMBER → ADD_WABA_TO_DB → ADD_PHONE_NUMBERS_TO_DB → COMPLETE.
-- The customer types the number themselves in Meta's popup — we can't pre-fill it. UI shows the assigned
-  number big + copy button; `finalize` checks `GET /v2/whatsapp/phone_numbers/{assigned}` and fails with a
-  clear message if they registered a different number.
-- Meta's OTP goes to the number by SMS or voice. SMS lands on the messaging profile webhook → we store
-  `last_otp_code` and show it in the tab (`enable` tries `PATCH /v2/phone_numbers/{id}/messaging` to put the
-  number on our profile; non-SMS numbers fall back to voice → answered in Greencaller normally).
-- Inbound WhatsApp routing needs `PATCH /v2/whatsapp/phone_numbers/{n}/profile {profile_id}` after signup
-  (done in finalize). Sending needs no profile; `from` resolves it.
-- Free text only inside the 24-hour window after the customer's last message; otherwise an **approved
-  template** (`GET /v2/whatsapp/message_templates?filter[status]=APPROVED`). UI banner + template dialog.
-- Common signup failures: SHARE_CREDIT_LINE ("already using a payment method" → WABA has its own billing;
-  month-end close → retry), number active on WhatsApp app → needs Coexistence (not implemented).
-- Inbound payload shape is only partially documented (`payload.body.text.body`, `body.<type>.url|id`,
-  `body.foreign_id`); webhook parser is defensive. `raw` column keeps the full payload — check it first when
-  something doesn't render.
+## Meta app setup Zaid must do once
+1. Meta Business portfolio for Greencaller + business verification (needed for Advanced Access).
+2. developers.facebook.com → app type **Business**, add **WhatsApp** product + **Facebook Login for
+   Business**. App Review: Advanced Access for `whatsapp_business_messaging`,
+   `whatsapp_business_management`. WhatsApp → "Become a Tech Provider" onboarding. Live mode.
+3. Facebook Login for Business → Settings: enable Client OAuth, Web OAuth, JS SDK login, Enforce HTTPS;
+   **Allowed Domains for the JavaScript SDK** must include `greencaller.app` (and any preview domain).
+   Configurations → create a *WhatsApp Embedded Signup* config → Config ID.
+4. Set the four secrets, deploy `meta-whatsapp-webhook` first, then admin tab → **Run setup**
+   (registers callback `…/functions/v1/meta-whatsapp-webhook` with fields messages,
+   account_update, phone_number_name_update). Readiness goes green.
+5. Customers must add a payment method in WhatsApp Manager (tech-provider model: Meta bills them).
+   Error 131030 on send = still in test mode / no payment method.
+
+## Traps
+- Business token from code exchange is a *business integration system user token* (non-expiring
+  unless the ES config is the "60-day expiration" template). Auth errors (190/102) flip the account
+  to `failed` with "reconnect".
+- Register error 133005 = number already has a two-step PIN → user must disable two-step in
+  WhatsApp Manager, reset, reconnect. We generate + store the PIN so re-registration (after display
+  name approval) works.
+- Display-name change: Meta review, then re-register within 14 days (webhook does it).
+- Inbound `from` is digits without "+"; we store E.164. Outbound `to` sent without "+".
+- 24-h window: error 131047 → template required. Templates are created in WhatsApp Manager (no UI here).
 
 ## Not done / ideas
-- Sending media (function supports `media_url`, UI doesn't). Downloading non-prefetched media
-  (`GET /v2/whatsapp/media/{phone}/{id}`) — stored as `telnyx-media:<id>` placeholder.
-- Coexistence signup type; template creation UI; deregistering number on remove.
+- Sending media from the UI (function supports `media_url`), template creation, coexistence signup,
+  deregistering on remove, Electron connect (open in browser instead).

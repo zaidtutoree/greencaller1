@@ -484,6 +484,7 @@ export type Database = {
         Row: {
           about: string | null
           address: string | null
+          business_id: string | null
           category: string | null
           connected_at: string | null
           connected_phone_number: string | null
@@ -496,6 +497,7 @@ export type Database = {
           last_otp_at: string | null
           last_otp_code: string | null
           messaging_profile_id: string | null
+          name_status: string | null
           phone_number: string | null
           phone_number_id: string | null
           profile_photo_url: string | null
@@ -512,6 +514,7 @@ export type Database = {
         Insert: {
           about?: string | null
           address?: string | null
+          business_id?: string | null
           category?: string | null
           connected_at?: string | null
           connected_phone_number?: string | null
@@ -524,6 +527,7 @@ export type Database = {
           last_otp_at?: string | null
           last_otp_code?: string | null
           messaging_profile_id?: string | null
+          name_status?: string | null
           phone_number?: string | null
           phone_number_id?: string | null
           profile_photo_url?: string | null
@@ -540,6 +544,7 @@ export type Database = {
         Update: {
           about?: string | null
           address?: string | null
+          business_id?: string | null
           category?: string | null
           connected_at?: string | null
           connected_phone_number?: string | null
@@ -552,6 +557,7 @@ export type Database = {
           last_otp_at?: string | null
           last_otp_code?: string | null
           messaging_profile_id?: string | null
+          name_status?: string | null
           phone_number?: string | null
           phone_number_id?: string | null
           profile_photo_url?: string | null

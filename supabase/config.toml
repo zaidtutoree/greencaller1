@@ -167,5 +167,5 @@ verify_jwt = false
 [functions.whatsapp-send]
 verify_jwt = false
 
-[functions.telnyx-whatsapp-webhook]
+[functions.meta-whatsapp-webhook]
 verify_jwt = false
