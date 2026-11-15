@@ -101,6 +101,9 @@ serve(async (req) => {
           } else {
             errors.push("No Meta app linked to this Telnyx account. Send Telnyx support your Meta App ID to link it.");
           }
+        } else if (apps.status === 404) {
+          // Telnyx returns 404 here until a Meta Tech Provider app has been linked to the account.
+          errors.push("No Meta app is linked to this Telnyx account yet. Send Telnyx support your Meta App ID and business name, then accept Meta's partner invitation.");
         } else {
           errors.push(`Could not read linked Meta apps: ${telnyxError(apps)}`);
         }
@@ -113,6 +116,8 @@ serve(async (req) => {
               enabled: true,
               webhook_url: WEBHOOK_URL,
               webhook_api_version: "2",
+              // Required by Telnyx; "*" = any country (WhatsApp sends go worldwide).
+              whitelisted_destinations: ["*"],
             });
             if (mp.ok && mp.data?.data?.id) {
               await setConfig("messaging_profile_id", mp.data.data.id);
